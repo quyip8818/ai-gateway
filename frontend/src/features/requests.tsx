@@ -50,6 +50,9 @@ const filters = [
   ["running", "运行中"],
   ["queued", "排队中"],
   ["canceled", "已取消"],
+  ["client_canceled", "客户端取消"],
+  ["submitting", "提交中"],
+  ["finalizing", "交付中"],
 ];
 
 export function RequestList({ project }: { project: Project }) {
@@ -350,7 +353,7 @@ export function UsageTable({
                 {item.unit}
               </td>
               <td>
-                {item.source === "upstream"
+                {item.source === "reported" || item.source === "upstream"
                   ? "上游报告"
                   : item.source === "estimated"
                     ? "估算"

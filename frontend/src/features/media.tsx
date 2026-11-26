@@ -6,7 +6,6 @@ import {
   date,
   operationName,
   projectURL,
-  usePages,
   useResource,
   workspaceURL,
 } from "../api";
@@ -17,11 +16,12 @@ import {
   Loading,
   Notice,
   Page,
-  Pager,
   Panel,
   Segments,
   Status,
 } from "../components";
+
+import { MediaLibrary } from "./media-library";
 
 const formats = [
   ["image.generate", "图片"],
@@ -32,19 +32,17 @@ const terminal = (job: Job) =>
 const inputLabels: Record<string, string> = {
   first_frame: "首帧",
   reference_image: "参考图",
-  last_frame: "尾帧",
 };
+
+function referenceRole(operation: string) {
+  return operation === "video.generate" ? "first_frame" : "reference_image";
+}
 
 export function Media({ project }: { project: Project }) {
   const base = projectURL(project.id) + "/media";
   const root = workspaceURL(project);
   const navigate = useNavigate();
-  const pages = usePages();
   const models = useResource<Collection<Model>>(base + "/models");
-  const jobs = useResource<Collection<Job>>(
-    base + "/jobs?" + new URLSearchParams({ cursor: pages.cursor, limit: "8" }),
-    pages.cursor ? 0 : 3000,
-  );
   const [mode, setMode] = useState("");
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -75,6 +73,7 @@ export function Media({ project }: { project: Project }) {
         throw new Error("提示词超过 32,000 字节。");
       let asset = "";
       if (file) {
+        if (file.size > 12 * 1024 * 1024) throw new Error("file_too_large");
         if (upload.current?.file !== file) {
           const body = new FormData();
           body.set("file", file);
@@ -98,7 +97,7 @@ export function Media({ project }: { project: Project }) {
           ? [
               {
                 asset_id: asset,
-                role: form.get("role") ?? choice.capabilities?.input_roles?.[0],
+                role: referenceRole(choice.operation),
               },
             ]
           : undefined,
@@ -122,8 +121,8 @@ export function Media({ project }: { project: Project }) {
       title="媒体创作"
       description="生成图片和视频。提交后可离开页面，稍后查看结果。"
     >
-      <div className="columns">
-        <Panel title="新建任务" className="composer">
+      <div className="columns media-columns">
+        <Panel title="新建任务">
           <Segments
             label="创作类型"
             value={operation}
@@ -204,40 +203,7 @@ export function Media({ project }: { project: Project }) {
             </form>
           )}
         </Panel>
-        <Panel title="近期任务">
-          <Notice error={jobs.error} retry={jobs.refresh} />
-          {!jobs.value && !jobs.error && <Loading />}
-          {jobs.value?.data.length === 0 && (
-            <Empty title="暂无任务">提交后可在这里查看进度与成品。</Empty>
-          )}
-          {!!jobs.value?.data.length && (
-            <ul className="activity">
-              {jobs.value.data.map((job) => (
-                <li key={job.id}>
-                  <Link to={root + "/media/" + job.id}>
-                    <span className="activity-icon" aria-hidden="true">
-                      {job.operation === "video.generate" ? "▷" : "◫"}
-                    </span>
-                    <span>
-                      <strong>{operationName(job.operation)}</strong>
-                      <small>{job.model}</small>
-                      <small>{date(job.created_at)}</small>
-                    </span>
-                    <Status value={job.status} />
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-          <Pager
-            previous={pages.previous}
-            next={
-              jobs.value?.next_cursor
-                ? () => pages.next(jobs.value!.next_cursor!)
-                : undefined
-            }
-          />
-        </Panel>
+        <MediaLibrary base={base} root={root} />
       </div>
     </Page>
   );
@@ -254,8 +220,9 @@ function Options({
 }) {
   const ratios = model.capabilities?.aspect_ratios ?? [];
   const durations = model.capabilities?.duration_seconds ?? [];
-  const roles = model.capabilities?.input_roles ?? [];
-  if (!ratios.length && !durations.length && !roles.length) return null;
+  const role = referenceRole(model.operation);
+  const hasReference = model.capabilities?.input_roles?.includes(role) ?? false;
+  if (!ratios.length && !durations.length && !hasReference) return null;
   return (
     <details>
       <summary>生成选项</summary>
@@ -284,23 +251,9 @@ function Options({
             </select>
           </label>
         )}
-        {roles.length > 1 && (
+        {hasReference && (
           <label>
-            素材用途
-            <select name="role" disabled={busy}>
-              {roles.map((role) => (
-                <option key={role} value={role}>
-                  {inputLabels[role] ?? role}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        {!!roles.length && (
-          <label>
-            {roles.length === 1
-              ? (inputLabels[roles[0]] ?? roles[0])
-              : "参考素材"}
+            {inputLabels[role]}
             <input
               ref={fileInput}
               type="file"

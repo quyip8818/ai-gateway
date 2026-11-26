@@ -8,6 +8,7 @@ import {
   Route,
   Routes,
   useNavigate,
+  useLocation,
   useParams,
 } from "react-router-dom";
 import { api, consoleURL, useResource, workspaceURL } from "./api";
@@ -56,14 +57,9 @@ function Login({ onLogin }: { onLogin: () => void }) {
       <section className="login-brand">
         <Brand />
         <div>
-          <h1>
-            把模型带到
-            <br />
-            你的工作流。
-          </h1>
-          <p>在同一项目中管理上游账号、接入客户端并追踪调用。</p>
+          <h1>账号池网关</h1>
+          <p>管理上游账号、接入客户端和追踪项目调用。</p>
         </div>
-        <span className="login-line" aria-hidden="true" />
       </section>
       <section className="login-content">
         <div>
@@ -173,6 +169,7 @@ function Workspace({
 }) {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const project = projects.find((p) => p.id === id);
   if (!project) return <Navigate to={workspaceURL(projects[0])} replace />;
   const root = workspaceURL(project);
@@ -249,7 +246,7 @@ function Workspace({
           <Route path="media" element={<Media project={project} />} />
           <Route
             path="media/:jobId"
-            element={<JobDetail key={location.pathname} project={project} />}
+            element={<JobDetail key={pathname} project={project} />}
           />
           <Route path="requests" element={<RequestList project={project} />} />
           <Route

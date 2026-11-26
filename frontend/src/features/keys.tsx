@@ -21,16 +21,23 @@ export function Keys({ project }: { project: Project }) {
   const root = workspaceURL(project);
   const [params, setParams] = useSearchParams();
   const selectedPool = params.get("pool");
+  const issue = !!selectedPool || params.get("issue") === "1";
   const admin = project.role === "admin";
   const keys = useResource<Collection<Key>>(base + "/keys");
   const pools = useResource<Collection<Pool>>(admin ? base + "/pools" : null);
+  const [filter, setFilter] = useState("");
   const [action, setAction] = useState<Action>();
   const [secret, setSecret] = useState<{ key: string; id: string }>();
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const entries = keys.value?.data ?? [];
+  const activeCount = entries.filter((key) => !key.revoked_at).length;
+  const visible = entries.filter(
+    (key) => !filter || filter === (key.revoked_at ? "revoked" : "active"),
+  );
   const current =
-    action ?? (selectedPool && admin ? { type: "create" as const } : undefined);
+    action ?? (issue && admin ? { type: "create" as const } : undefined);
   const title =
     current?.type === "create"
       ? "签发调用密钥"
@@ -41,7 +48,12 @@ export function Keys({ project }: { project: Project }) {
   function close() {
     setAction(undefined);
     setError("");
-    if (selectedPool) setParams({}, { replace: true });
+    if (issue) {
+      const next = new URLSearchParams(params);
+      next.delete("pool");
+      next.delete("issue");
+      setParams(next, { replace: true });
+    }
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -99,7 +111,24 @@ export function Keys({ project }: { project: Project }) {
           {message}
         </div>
       )}
-      <Panel title="我的密钥">
+      <Panel
+        title="我的密钥"
+        actions={
+          !!entries.length && (
+            <select
+              aria-label="按状态筛选密钥"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            >
+              <option value="">全部密钥（{entries.length}）</option>
+              <option value="active">已启用（{activeCount}）</option>
+              <option value="revoked">
+                已撤销（{entries.length - activeCount}）
+              </option>
+            </select>
+          )
+        }
+      >
         <Notice error={keys.error} retry={keys.refresh} />
         {!keys.value && !keys.error && <Loading />}
         {keys.value?.data.length === 0 && (
@@ -109,7 +138,10 @@ export function Keys({ project }: { project: Project }) {
               : "请联系项目管理员获取已授权的调用密钥。"}
           </Empty>
         )}
-        {!!keys.value?.data.length && (
+        {!!entries.length && !visible.length && (
+          <Empty title="没有此状态的密钥" />
+        )}
+        {!!visible.length && (
           <div className="table-wrap">
             <table>
               <thead>
@@ -121,7 +153,7 @@ export function Keys({ project }: { project: Project }) {
                 </tr>
               </thead>
               <tbody>
-                {keys.value.data.map((key) => (
+                {visible.map((key) => (
                   <tr key={key.id}>
                     <td>
                       <strong>{key.label}</strong>

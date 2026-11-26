@@ -1,23 +1,14 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, date, projectURL, useResource, workspaceURL } from "../api";
-import type { Collection, Pool, Project } from "../api";
+import type { Collection, Model, Pool, Project } from "../api";
 import { Empty, Loading, Notice, Page, Panel, Status } from "../components";
 
 import { Enroll } from "./account-enrollment";
 import type { Provider } from "./account-enrollment";
+import { needsAuthorization, PoolOverview } from "./pool-overview";
+import type { Account } from "./pool-overview";
 
-type Account = {
-  id: string;
-  label: string;
-  provider: string;
-  enabled: boolean;
-  expires_at?: string;
-  refresh_state?: string;
-  verified_at?: string;
-  last_used_at?: string;
-  models: number;
-};
 type Authorization = { status: string };
 const authorizationDone = (value: Authorization) =>
   !["waiting", "verifying"].includes(value.status);
@@ -28,12 +19,26 @@ export function Admin({ project }: { project: Project }) {
   const providers = useResource<Collection<Provider>>(base + "/providers");
   const accounts = useResource<Collection<Account>>(base + "/accounts");
   const pools = useResource<Collection<Pool>>(base + "/pools");
+  const models = useResource<Collection<Model>>(base + "/models");
+  const poolEntries = pools.value?.data ?? [];
   const [filter, setFilter] = useState("");
+  const [reauthorize, setReauthorize] = useState(false);
   const [adding, setAdding] = useState(false);
   const [createdPool, setCreatedPool] = useState("");
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
   const [params, setParams] = useSearchParams();
+  const showImport = adding || params.get("add") === "1";
+
+  function closeImport() {
+    setAdding(false);
+    if (params.has("add")) {
+      const next = new URLSearchParams(params);
+      next.delete("add");
+      setParams(next, { replace: true });
+    }
+  }
+
   const authorization = params.get("authorization");
   const result = useResource<Authorization>(
     authorization
@@ -43,7 +48,9 @@ export function Admin({ project }: { project: Project }) {
     authorizationDone,
   );
   const visible = accounts.value?.data.filter(
-    (account) => !filter || filter === account.provider,
+    (account) =>
+      (!filter || filter === account.provider) &&
+      (!reauthorize || needsAuthorization(account)),
   );
   const providerName = (id: string) =>
     providers.value?.data.find((item) => item.id === id)?.name ?? id;
@@ -51,6 +58,7 @@ export function Admin({ project }: { project: Project }) {
   function refresh() {
     accounts.refresh();
     pools.refresh();
+    models.refresh();
   }
 
   async function toggle(account: Account) {
@@ -115,12 +123,45 @@ export function Admin({ project }: { project: Project }) {
         </div>
       )}
       <Panel
+        title="账号池"
+        actions={
+          <button className="secondary" onClick={refresh}>
+            刷新状态
+          </button>
+        }
+      >
+        <Notice error={pools.error} retry={pools.refresh} />
+        <Notice error={models.error} retry={models.refresh} />
+        {!pools.value && !pools.error && <Loading />}
+        {pools.value?.data.length === 0 && (
+          <Empty title="暂无账号池">第一个账号验证通过后会自动创建。</Empty>
+        )}
+        {!!poolEntries.length && (
+          <PoolOverview
+            pools={poolEntries}
+            accounts={accounts.value?.data}
+            models={models.value?.data}
+            providerName={providerName}
+            root={root}
+            selectedProvider={filter}
+            reauthorize={reauthorize}
+            onSelect={(provider, attention) => {
+              setFilter(provider);
+              setReauthorize(attention);
+            }}
+          />
+        )}
+      </Panel>
+      <Panel
         title="账号列表"
         actions={
           <select
             aria-label="按供应商筛选"
             value={filter}
-            onChange={(e) => setFilter(e.target.value)}
+            onChange={(e) => {
+              setFilter(e.target.value);
+              setReauthorize(false);
+            }}
           >
             <option value="">全部供应商</option>
             {providers.value?.data.map((provider) => (
@@ -131,11 +172,27 @@ export function Admin({ project }: { project: Project }) {
           </select>
         }
       >
+        {reauthorize && (
+          <div className="inline account-filter">
+            <Status value="reauthorize" />
+            <button className="secondary" onClick={() => setReauthorize(false)}>
+              清除状态筛选
+            </button>
+          </div>
+        )}
         <Notice error={accounts.error} retry={accounts.refresh} />
         <Notice error={providers.error} retry={providers.refresh} />
         {!visible && !accounts.error && <Loading />}
         {visible?.length === 0 && (
-          <Empty title={filter ? "此供应商暂无账号" : "还没有上游账号"}>
+          <Empty
+            title={
+              reauthorize
+                ? "没有待重新授权的账号"
+                : filter
+                  ? "此供应商暂无账号"
+                  : "还没有上游账号"
+            }
+          >
             <button className="secondary" onClick={() => setAdding(true)}>
               添加账号
             </button>
@@ -156,10 +213,7 @@ export function Admin({ project }: { project: Project }) {
               </thead>
               <tbody>
                 {visible.map((account) => {
-                  const needsAuth =
-                    account.refresh_state === "reauthorize" ||
-                    (!!account.expires_at &&
-                      Date.parse(account.expires_at) <= Date.now());
+                  const needsAuth = needsAuthorization(account);
                   return (
                     <tr key={account.id}>
                       <td>
@@ -173,7 +227,9 @@ export function Admin({ project }: { project: Project }) {
                               ? "paused"
                               : needsAuth
                                 ? "reauthorize"
-                                : "active"
+                                : account.refresh_state === "refreshing"
+                                  ? "refreshing"
+                                  : "active"
                           }
                         />
                         {!account.enabled && needsAuth && (
@@ -204,38 +260,18 @@ export function Admin({ project }: { project: Project }) {
           </div>
         )}
       </Panel>
-      <Panel title="账号池">
-        <Notice error={pools.error} retry={pools.refresh} />
-        {!pools.value && !pools.error && <Loading />}
-        {pools.value && !pools.value.data.length && (
-          <Empty title="暂无账号池">第一个账号验证通过后会自动创建。</Empty>
-        )}
-        {!!pools.value?.data.length && (
-          <div className="pool-grid">
-            {pools.value.data.map((pool) => (
-              <div className="pool" key={pool.id}>
-                <strong>{providerName(pool.provider)}</strong>
-                <code>{pool.slug}</code>
-                <small>{pool.available} 个可用账号</small>
-                <Link to={root + "/keys?pool=" + encodeURIComponent(pool.id)}>
-                  签发密钥
-                </Link>
-              </div>
-            ))}
-          </div>
-        )}
-      </Panel>
-      {adding && (
+      {showImport && (
         <Enroll
           base={base}
           providers={providers.value?.data}
           error={providers.error}
           retry={providers.refresh}
           initial={filter}
-          close={() => setAdding(false)}
+          close={closeImport}
           done={(pool) => {
-            setAdding(false);
+            closeImport();
             setFilter("");
+            setReauthorize(false);
             setCreatedPool(pool);
             providers.refresh();
             refresh();

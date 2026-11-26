@@ -63,9 +63,18 @@ export function Setup({ project }: { project: Project }) {
       title="使用网关"
       description="按客户端选择公开模型，复制配置并验证首条请求。"
       actions={
-        <Link className="button secondary" to={root + "/media"}>
-          打开媒体创作 <span aria-hidden="true">↗</span>
-        </Link>
+        admin && pools.value?.data.length === 0 ? (
+          <Link className="button" to={root + "/admin?add=1"}>
+            添加上游账号
+          </Link>
+        ) : admin &&
+          pools.value?.data.length &&
+          keys.value &&
+          !activeKeys.length ? (
+          <Link className="button" to={root + "/keys?issue=1"}>
+            签发调用密钥
+          </Link>
+        ) : undefined
       }
     >
       {admin && pools.value && keys.value && (
