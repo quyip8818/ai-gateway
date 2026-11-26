@@ -5,7 +5,6 @@ export const jimeng = {
   icon: "✧",
   protocol: "media",
   provider: "jimeng",
-  providerName: "即梦",
   operations: [
     { id: "image.generate", label: "图片生成" },
     { id: "video.generate", label: "视频生成" },
@@ -21,7 +20,6 @@ export const products = [
     icon: ">_",
     protocol: "responses",
     provider: "openai",
-    providerName: "OpenAI",
     operations: [{ id: "responses", label: "文本生成" }],
   },
   {
@@ -31,19 +29,12 @@ export const products = [
     icon: "✳",
     protocol: "messages",
     provider: "anthropic",
-    providerName: "Anthropic",
     operations: [{ id: "messages", label: "对话生成" }],
   },
   jimeng,
 ] as const;
 
 export type Product = (typeof products)[number];
-
-export const providers = [
-  ...new Map(
-    products.map(({ provider, providerName }) => [provider, providerName]),
-  ),
-];
 
 export type ProductOperation = {
   id: string;

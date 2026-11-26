@@ -23,21 +23,19 @@ func (s Service) Connections(w http.ResponseWriter, r *http.Request, who access.
 		s.query(w, r, `SELECT jsonb_build_object('id',id,'label',label,'provider',provider,'enabled',enabled,'base_url',base_url,'probe_state',probe_state,'probed_at',probed_at) FROM connections WHERE project_id=$1 ORDER BY label`, who.Project)
 		return
 	}
-	var in struct {
-		Provider, Label, Base, Token, Quota, Region string
-		VideoIdempotencyVerified                    bool
-	}
+	var in connectionDraft
 	if !Decode(w, r, &in) {
 		return
 	}
-	if in.Label == "" || in.Token == "" || in.Quota == "" || catalog.ValidateBase(in.Provider, in.Base, s.JimengBase) != nil {
+	provider, ok := catalog.LookupProvider(in.Provider)
+	if !ok || !in.prepare(provider, s.JimengBase) {
 		platform.Error(w, 400, "invalid_connection")
 		return
 	}
 	id := platform.ID()
 	enc, err := platform.Seal(s.Catalog.Key, id, in.Token)
 	if err == nil {
-		_, err = s.DB.Exec(r.Context(), `INSERT INTO connections(id,tenant_id,project_id,provider,label,base_url,token,quota_scope,region,video_idempotency_verified) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, who.Tenant, who.Project, in.Provider, in.Label, in.Base, enc, in.Quota, in.Region, in.Provider == "jimeng" && in.VideoIdempotencyVerified)
+		_, err = s.DB.Exec(r.Context(), `INSERT INTO connections(id,tenant_id,project_id,provider,label,base_url,token,quota_scope,region,video_idempotency_verified) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, id, who.Tenant, who.Project, in.Provider, in.Label, in.Base, enc, in.Quota, in.Region, provider.SupportsVideoIdempotency && in.VideoIdempotencyVerified)
 	}
 	if err != nil {
 		platform.Error(w, 503, "connection_create_failed")
@@ -45,6 +43,28 @@ func (s Service) Connections(w http.ResponseWriter, r *http.Request, who access.
 	}
 	platform.JSON(w, 201, map[string]string{"id": id})
 }
+
+type connectionDraft struct {
+	Provider, Label, Base, Token, Quota, Region string
+	VideoIdempotencyVerified                    bool
+}
+
+func (in *connectionDraft) prepare(provider catalog.Provider, jimengBase string) bool {
+	if provider.ID == "jimeng" {
+		if in.Label == "" {
+			in.Label = "即梦"
+		}
+		if in.Base == "" {
+			in.Base = jimengBase
+		}
+		if in.Quota == "" {
+			in.Quota = provider.ID
+		}
+	}
+	return in.Label != "" && in.Token != "" && in.Quota != "" &&
+		provider.ValidateBase(in.Base, jimengBase) == nil
+}
+
 func (s Service) Routes(w http.ResponseWriter, r *http.Request, who access.Identity) {
 	if who.Role != "admin" {
 		platform.Error(w, 403, "admin_required")
@@ -87,19 +107,17 @@ func decodeRouteDraft(w http.ResponseWriter, r *http.Request, in *routeDraft) bo
 	return true
 }
 
-var routeProviders = map[string]string{"responses": "openai", "messages": "anthropic", "image.generate": "jimeng", "video.generate": "jimeng"}
-
 type routeQuery interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func routeError(ctx context.Context, q routeQuery, project string, in routeDraft) (string, error) {
-	provider := routeProviders[in.Operation]
-	if provider == "" || !modelID.MatchString(in.Model) || !modelID.MatchString(in.Upstream) || in.Connection == "" {
+	provider, ok := catalog.ProviderForOperation(in.Operation)
+	if !ok || !modelID.MatchString(in.Model) || !modelID.MatchString(in.Upstream) || in.Connection == "" {
 		return "invalid_route", nil
 	}
 	var valid bool
-	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM connections WHERE id::text=$1 AND project_id=$2 AND provider=$3 AND enabled)`, in.Connection, project, provider).Scan(&valid)
+	err := q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM connections WHERE id::text=$1 AND project_id=$2 AND provider=$3 AND enabled)`, in.Connection, project, provider.ID).Scan(&valid)
 	if err != nil {
 		return "", err
 	}
@@ -109,7 +127,7 @@ func routeError(ctx context.Context, q routeQuery, project string, in routeDraft
 	if in.Backup == "" {
 		return "", nil
 	}
-	if provider == "jimeng" {
+	if !provider.AllowBackup {
 		return "invalid_backup", nil
 	}
 	err = q.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM connections p JOIN connections c ON c.project_id=p.project_id WHERE p.id::text=$1 AND c.id::text=$2

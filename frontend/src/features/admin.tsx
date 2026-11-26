@@ -5,8 +5,10 @@ import { api, projectURL, text, useResource } from "../api";
 import type { Project, Row } from "../api";
 import { Field, Notice, PageHeading, Panel } from "../components";
 
-import { jimeng, operations, providers } from "../products";
+import { operations } from "../products";
 import type { ProductOperation } from "../products";
+import { providerDetails } from "../providers";
+import { ConnectionForm } from "./connection-form";
 
 function BillingPanel({ project }: { project: Project }) {
   const base = projectURL(project.id) + "/billing";
@@ -159,9 +161,9 @@ function AdminRouting({
   selected: ProductOperation;
   selectOperation: (operation: string) => void;
 }) {
-  const [provider, setProvider] = useState<string>();
   const operation = selected.id;
   const routeProvider = selected.product.provider;
+  const allowBackup = providerDetails(routeProvider).allowBackup;
   const isMedia = selected.product.protocol === "media";
   const [connection, setConnection] = useState("");
   const [saving, setSaving] = useState(false);
@@ -223,8 +225,6 @@ function AdminRouting({
         body.capabilities = JSON.parse(
           String(body.capabilities ?? "").trim() || "{}",
         );
-      if (save === "/connections")
-        body.videoIdempotencyVerified = body.videoIdempotencyVerified === "on";
       await api(base + effectivePath, body);
       if (effectivePath === "/routes/validate") {
         setValidation("草稿校验通过");
@@ -249,34 +249,11 @@ function AdminRouting({
       <Notice error={err || connections.error || routes.error} />
       <div className="grid studio-grid">
         <Panel title="上游连接">
-          <form onSubmit={(e) => submit(e, "/connections")}>
-            <label>
-              供应商
-              <select
-                name="provider"
-                value={provider ?? routeProvider}
-                onChange={(event) => setProvider(event.target.value)}
-              >
-                {providers.map(([id, label]) => (
-                  <option key={id} value={id}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Field label="名称" name="label" />
-            <Field label="上游地址" name="base" type="url" />
-            <Field label="上游凭证" name="token" type="password" />
-            <Field label="共享额度域" name="quota" />
-            <Field label="上游数据区域" name="region" required={false} />
-            {(provider ?? routeProvider) === jimeng.provider && (
-              <label className="inline">
-                <input type="checkbox" name="videoIdempotencyVerified" />
-                已验证即梦视频幂等协议
-              </label>
-            )}
-            <button disabled={saving}>保存连接</button>
-          </form>
+          <ConnectionForm
+            defaultProvider={routeProvider}
+            saving={saving}
+            onSubmit={(event) => submit(event, "/connections")}
+          />
           <ul className="rows">
             {connections.value?.data.map((x) => (
               <li key={text(x.id)}>
@@ -344,7 +321,7 @@ function AdminRouting({
             {connections.value && !compatible.length && (
               <small>请先添加或启用与此操作匹配的上游连接。</small>
             )}
-            {!isMedia && (
+            {allowBackup && (
               <label>
                 备用连接
                 <select name="backup" key={operation + "|" + connection}>

@@ -117,7 +117,8 @@ func (s Service) ProbeConnection(w http.ResponseWriter, r *http.Request, who acc
 		platform.Error(w, 404, "connection_not_found")
 		return
 	}
-	if err != nil || catalog.ValidateBase(provider, base, s.JimengBase) != nil {
+	policy, ok := catalog.LookupProvider(provider)
+	if err != nil || !ok || policy.ValidateBase(base, s.JimengBase) != nil {
 		platform.Error(w, 503, "connection_unavailable")
 		return
 	}
@@ -133,12 +134,7 @@ func (s Service) ProbeConnection(w http.ResponseWriter, r *http.Request, who acc
 		platform.Error(w, 503, "connection_unavailable")
 		return
 	}
-	if provider == "anthropic" {
-		request.Header.Set("x-api-key", token)
-		request.Header.Set("anthropic-version", "2023-06-01")
-	} else {
-		request.Header.Set("Authorization", "Bearer "+token)
-	}
+	policy.SetAuth(request.Header, token, nil)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	defer transport.CloseIdleConnections()
