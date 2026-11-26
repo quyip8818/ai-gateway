@@ -1,73 +1,24 @@
-import { Link } from "react-router-dom";
-import { operationLabel } from "../products";
 import { projectURL, text, useResource } from "../api";
 import type { Project, Row } from "../api";
-import { Notice, PageHeading, Panel } from "../components";
+import { Notice, Panel } from "../components";
 
 export function Usage({ project }: { project: Project }) {
-  const result = useResource<{
-    operations: { operation: string; requests: number; succeeded: number }[];
-    usage: Row[];
-  }>(projectURL(project.id) + "/usage");
-  const totals = result.value?.operations.reduce(
-    (total, row) => ({
-      requests: total.requests + Number(row.requests),
-      succeeded: total.succeeded + Number(row.succeeded),
-    }),
-    { requests: 0, succeeded: 0 },
+  const result = useResource<{ operations: Row[]; usage: Row[] }>(
+    projectURL(project.id) + "/usage",
   );
-  const formatter = new Intl.NumberFormat("zh-CN");
-  const metrics = [
-    {
-      label: "请求总量",
-      value: totals ? formatter.format(totals.requests) : "—",
-    },
-    {
-      label: "成功请求",
-      value: totals ? formatter.format(totals.succeeded) : "—",
-    },
-    {
-      label: "请求成功占比",
-      value: totals?.requests
-        ? ((totals.succeeded / totals.requests) * 100).toFixed(1) + "%"
-        : "—",
-    },
-  ];
   return (
     <>
-      <PageHeading
-        title="运行概览"
-        description="当前项目近 30 天的请求结果与上游用量。"
-      >
-        <Link className="action-link" to="../requests">
-          查看请求
-        </Link>
-        <a
-          className="action-link"
-          href={projectURL(project.id) + "/usage/export"}
-          download
-        >
-          导出用量 CSV
-        </a>
-      </PageHeading>
+      <h1>近 30 天用量</h1>
+      <a href={projectURL(project.id) + "/usage/export"} download>
+        导出上游用量 CSV
+      </a>
       <Notice error={result.error} />
-      <dl className="metric-grid">
-        {metrics.map((metric) => (
-          <div className="metric" key={metric.label}>
-            <dt>{metric.label}</dt>
-            <dd>{metric.value}</dd>
-          </div>
-        ))}
-      </dl>
       <div className="grid">
-        <Panel title="按操作统计">
-          {result.value?.operations.length === 0 && (
-            <p className="muted">近 30 天暂无请求。</p>
-          )}
+        <Panel title="请求">
           <ul className="rows">
             {result.value?.operations.map((r) => (
-              <li key={operationLabel(text(r.operation))}>
-                {operationLabel(text(r.operation))}
+              <li key={text(r.operation)}>
+                {text(r.operation)}
                 <span>
                   {text(r.succeeded)} / {text(r.requests)} 成功
                 </span>
@@ -79,16 +30,14 @@ export function Usage({ project }: { project: Project }) {
           <ul className="rows">
             {result.value?.usage.map((r, i) => (
               <li key={i}>
-                {operationLabel(text(r.operation))} · {text(r.metric)}
+                {text(r.operation)} · {text(r.metric)}
                 <span>
                   {text(r.quantity)} {text(r.unit)}
                 </span>
               </li>
             ))}
           </ul>
-          {result.value?.usage.length === 0 && (
-            <p className="muted">暂无上游报告用量。</p>
-          )}
+          {!result.value?.usage.length && <p>暂无上游报告用量</p>}
         </Panel>
       </div>
     </>

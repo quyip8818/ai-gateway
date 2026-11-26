@@ -1,63 +1,34 @@
-import { operationLabel } from "../products";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { projectURL, text, useResource } from "../api";
 import type { Project, Row } from "../api";
-import { Notice, PageHeading, Panel, Status } from "../components";
+import { Notice, Panel, Status } from "../components";
 
 export function RequestList({ project }: { project: Project }) {
-  const [search, setSearch] = useState({ id: "", model: "", status: "" }),
+  const [search, setSearch] = useState(""),
+    [id, setID] = useState(""),
     [cursor, setCursor] = useState("");
   const result = useResource<{ data: Row[]; next_cursor?: string }>(
     projectURL(project.id) +
       "/requests?" +
-      new URLSearchParams({ ...search, cursor }),
+      new URLSearchParams({ id: search, cursor }),
   );
   return (
     <>
-      <PageHeading
-        title="请求记录"
-        description="按请求 ID、模型或状态查找调用和媒体任务。"
-      >
-        <button type="button" className="secondary" onClick={result.refresh}>
-          刷新
-        </button>
-      </PageHeading>
+      <h1>请求记录</h1>
       <Notice error={result.error} />
       <Panel title="定位请求">
         <form
           className="inline"
           onSubmit={(e) => {
             e.preventDefault();
-            const fields = new FormData(e.currentTarget);
-            setSearch({
-              id: String(fields.get("id")).trim(),
-              model: String(fields.get("model")).trim(),
-              status: String(fields.get("status")),
-            });
+            setSearch(id.trim());
             setCursor("");
           }}
         >
           <label>
             网关请求 ID
-            <input name="id" />
-          </label>
-          <label>
-            模型 ID
-            <input name="model" />
-          </label>
-          <label>
-            状态
-            <select name="status">
-              <option value="">全部状态</option>
-              <option value="succeeded">成功</option>
-              <option value="failed">失败</option>
-              <option value="running">运行中</option>
-              <option value="queued">排队</option>
-              <option value="submit_unknown">待核验</option>
-              <option value="canceled">已取消</option>
-              <option value="interrupted">流中断</option>
-            </select>
+            <input value={id} onChange={(e) => setID(e.target.value)} />
           </label>
           <button>查询</button>
         </form>
@@ -67,7 +38,6 @@ export function RequestList({ project }: { project: Project }) {
               <tr>
                 <th>请求 ID</th>
                 <th>模型</th>
-                <th>操作</th>
                 <th>状态</th>
                 <th>时间</th>
               </tr>
@@ -79,7 +49,6 @@ export function RequestList({ project }: { project: Project }) {
                     <Link to={text(row.id)}>{text(row.id)}</Link>
                   </td>
                   <td>{text(row.model)}</td>
-                  <td>{operationLabel(text(row.operation))}</td>
                   <td>
                     <Status value={row.status} />
                   </td>
@@ -89,11 +58,7 @@ export function RequestList({ project }: { project: Project }) {
             </tbody>
           </table>
         </div>
-        {!result.value?.data.length && !result.error && (
-          <p className="muted">
-            {result.value ? "暂无符合条件的请求" : "正在读取请求…"}
-          </p>
-        )}
+        {!result.value?.data.length && <p>暂无符合条件的请求</p>}
         {cursor && (
           <button className="secondary" onClick={() => setCursor("")}>
             最新请求
@@ -119,11 +84,8 @@ export function RequestDetail({ project }: { project: Project }) {
   const d = result.value;
   return (
     <>
-      <PageHeading title="请求详情" description={requestId}>
-        <Link className="action-link" to="../requests">
-          返回请求记录
-        </Link>
-      </PageHeading>
+      <h1>请求详情</h1>
+      <p className="mono">{requestId}</p>
       <Notice error={result.error} />
       {d && (
         <Panel title={text(d.model)}>

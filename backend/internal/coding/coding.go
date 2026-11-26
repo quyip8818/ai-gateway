@@ -127,8 +127,7 @@ func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, provider, opera
 		apiError(w, provider, 404, "model_not_found")
 		return
 	}
-	policy, supported := catalog.LookupProvider(provider)
-	if err != nil || !supported || route.Provider != provider {
+	if err != nil || route.Provider != provider {
 		apiError(w, provider, 503, "route_unavailable")
 		return
 	}
@@ -176,7 +175,19 @@ func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, provider, opera
 		}
 		req.GetBody = nil
 		req.Header.Set("Content-Type", "application/json")
-		policy.SetAuth(req.Header, route.Token, r.Header)
+		if provider == "anthropic" {
+			req.Header.Set("x-api-key", route.Token)
+			version := r.Header.Get("anthropic-version")
+			if version == "" {
+				version = "2023-06-01"
+			}
+			req.Header.Set("anthropic-version", version)
+			for _, beta := range r.Header.Values("anthropic-beta") {
+				req.Header.Add("anthropic-beta", beta)
+			}
+		} else {
+			req.Header.Set("Authorization", "Bearer "+route.Token)
+		}
 		return s.Client.Do(req)
 	}
 	resp, err := send(route)

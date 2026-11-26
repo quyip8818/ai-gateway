@@ -233,11 +233,7 @@ func (s *Service) request(ctx context.Context, route catalog.Route, method, path
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	policy, ok := catalog.LookupProvider(route.Provider)
-	if !ok {
-		return nil, errors.New("unsupported upstream provider")
-	}
-	policy.SetAuth(req.Header, route.Token, nil)
+	req.Header.Set("Authorization", "Bearer "+route.Token)
 	if idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}

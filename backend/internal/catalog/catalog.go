@@ -3,6 +3,8 @@ package catalog
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/url"
 
 	"ai-gateway/internal/platform"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -55,6 +57,28 @@ func (s Store) Models(ctx context.Context, project, op string) ([]Model, error) 
 		models = append(models, m)
 	}
 	return models, rows.Err()
+}
+
+func ValidateBase(provider, value, jimengBase string) error {
+	u, err := url.Parse(value)
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("invalid upstream base URL")
+	}
+	switch provider {
+	case "openai":
+		if value == "https://api.openai.com" {
+			return nil
+		}
+	case "anthropic":
+		if value == "https://api.anthropic.com" {
+			return nil
+		}
+	case "jimeng":
+		if value == jimengBase && (u.Scheme == "http" || u.Scheme == "https") {
+			return nil
+		}
+	}
+	return errors.New("upstream base URL is outside the deployment allowlist")
 }
 
 // Backup returns the one approved equivalent target for the same route version.
