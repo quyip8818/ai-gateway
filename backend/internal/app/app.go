@@ -52,6 +52,10 @@ func (a App) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /console/v1/projects", a.Console.Projects)
 	mux.HandleFunc("GET /console/v1/oauth/callback", a.Console.AuthorizationCallback)
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH"} {
+		mux.HandleFunc(method+" /console/v1/provider-settings/{provider}", a.Console.ProviderSettings)
+	}
+	mux.HandleFunc("DELETE /console/v1/provider-settings/{provider}/executors/{executor}", a.Console.ProviderSettings)
 	const p = "/console/v1/projects/{project}"
 	auth := func(method, path string, fn bound) {
 		mux.HandleFunc(method+" "+p+path, func(w http.ResponseWriter, r *http.Request) {

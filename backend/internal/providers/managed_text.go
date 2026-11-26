@@ -56,7 +56,7 @@ func parseManagedKiro(raw string) (Credential, error) {
 		return Credential{}, ErrCredential
 	}
 	if file.RefreshToken == "" {
-		return Credential{}, ErrCredential
+		return Credential{}, nil
 	}
 	if !validToken(file.RefreshToken) ||
 		(file.AuthRegion != "" && !awsRegion.MatchString(file.AuthRegion)) ||
@@ -72,33 +72,48 @@ func parseManagedKiro(raw string) (Credential, error) {
 type adminCall func(method, path string, data, result any) error
 type importCredential func(call adminCall, payload json.RawMessage, id string) (removePath string, err error)
 
-func textProvisioner(parse func(string) (Credential, error), importAccount importCredential) *provisioner {
+func textProvisioner(parse func(string) (Credential, error), free func(adminCall) error, importAccount importCredential) *provisioner {
 	return &provisioner{
 		parse: parse,
 		validate: func(executor Executor) bool {
 			return validToken(executor.ManagementKey) && validToken(executor.RuntimeKey) &&
 				executor.ManagementKey != executor.RuntimeKey
 		},
+		probe: func(r Registry, ctx context.Context, adapter Adapter, executor Executor) error {
+			if err := free(r.textAdmin(ctx, executor)); err != nil {
+				return err
+			}
+			adapter.Base = executor.URL
+			_, err := r.modelDirectory(ctx, adapter, executor.RuntimeKey)
+			if err == ErrCredential {
+				return ErrUpstream
+			}
+			return err
+		},
 		run: func(r Registry, ctx context.Context, adapter Adapter, executor Executor, credential Credential, _, id string) (Prepared, error) {
+			if err := free(r.textAdmin(ctx, executor)); err != nil {
+				return Prepared{}, err
+			}
 			return r.provisionText(ctx, adapter, executor, credential.ManagedImport, id, importAccount)
 		},
 	}
 }
 
-func (r Registry) provisionText(ctx context.Context, adapter Adapter, executor Executor, payload json.RawMessage, id string, importAccount importCredential) (Prepared, error) {
-	call := func(ctx context.Context, method, path string, data, result any) error {
+func (r Registry) textAdmin(ctx context.Context, executor Executor) adminCall {
+	return func(method, path string, data, result any) error {
 		return executorCall(ctx, r.client, executor.URL, executor.ManagementKey, method, path, data, result)
 	}
-	target, err := importAccount(func(method, path string, data, result any) error {
-		return call(ctx, method, path, data, result)
-	}, payload, id)
+}
+
+func (r Registry) provisionText(ctx context.Context, adapter Adapter, executor Executor, payload json.RawMessage, id string, importAccount importCredential) (Prepared, error) {
+	target, err := importAccount(r.textAdmin(ctx, executor), payload, id)
 	remove := func() {
 		if target == "" {
 			return
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = call(cleanup, "DELETE", target, nil, nil)
+		_ = r.textAdmin(cleanup, executor)("DELETE", target, nil, nil)
 	}
 	if err != nil {
 		remove()
@@ -113,17 +128,25 @@ func (r Registry) provisionText(ctx context.Context, adapter Adapter, executor E
 	return Prepared{Base: executor.URL, Token: executor.RuntimeKey, Models: models, Managed: true, Cleanup: remove}, nil
 }
 
-func importCodex(call adminCall, payload json.RawMessage, id string) (string, error) {
-	const files = "/v8/management/credentials"
+const (
+	codexFiles   = "/v8/management/credentials"
+	kiroAccounts = "/api/admin/credentials"
+)
+
+func freeCodex(call adminCall) error {
 	var listed struct{ Files []json.RawMessage }
-	if err := call("GET", files, nil, &listed); err != nil || listed.Files == nil {
-		return "", ErrUpstream
+	if err := call("GET", codexFiles, nil, &listed); err != nil || listed.Files == nil {
+		return ErrUpstream
 	}
 	if len(listed.Files) != 0 {
-		return "", ErrNoExecutor
+		return ErrNoExecutor
 	}
+	return nil
+}
+
+func importCodex(call adminCall, payload json.RawMessage, id string) (string, error) {
 	// The generated filename gives cleanup a precise target if upload times out.
-	target := files + "?name=" + url.QueryEscape(id+".json")
+	target := codexFiles + "?name=" + url.QueryEscape(id+".json")
 	var uploaded struct{ Status string }
 	if err := call("POST", target, payload, &uploaded); err != nil || uploaded.Status != "ok" {
 		return target, ErrUpstream
@@ -131,15 +154,18 @@ func importCodex(call adminCall, payload json.RawMessage, id string) (string, er
 	return target, nil
 }
 
-func importKiro(call adminCall, payload json.RawMessage, _ string) (string, error) {
-	const accounts = "/api/admin/credentials"
+func freeKiro(call adminCall) error {
 	var listed struct{ Credentials []json.RawMessage }
-	if err := call("GET", accounts, nil, &listed); err != nil || listed.Credentials == nil {
-		return "", ErrUpstream
+	if err := call("GET", kiroAccounts, nil, &listed); err != nil || listed.Credentials == nil {
+		return ErrUpstream
 	}
 	if len(listed.Credentials) != 0 {
-		return "", ErrNoExecutor
+		return ErrNoExecutor
 	}
+	return nil
+}
+
+func importKiro(call adminCall, payload json.RawMessage, _ string) (string, error) {
 	var uploaded struct {
 		Success bool
 		Results []struct {
@@ -147,11 +173,11 @@ func importKiro(call adminCall, payload json.RawMessage, _ string) (string, erro
 			ID     int64 `json:"credentialId"`
 		}
 	}
-	if err := call("POST", accounts+"/batch-import", map[string]json.RawMessage{"data": payload}, &uploaded); err != nil ||
+	if err := call("POST", kiroAccounts+"/batch-import", map[string]json.RawMessage{"data": payload}, &uploaded); err != nil ||
 		!uploaded.Success || len(uploaded.Results) != 1 || uploaded.Results[0].Status != "added" || uploaded.Results[0].ID <= 0 {
 		return "", ErrUpstream
 	}
-	target := accounts + "/" + strconv.FormatInt(uploaded.Results[0].ID, 10)
+	target := kiroAccounts + "/" + strconv.FormatInt(uploaded.Results[0].ID, 10)
 	var refreshed struct {
 		Success bool
 		Count   int

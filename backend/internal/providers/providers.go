@@ -71,7 +71,7 @@ func New(config Config) Registry {
 		config.Codex = openAIPlatform
 	}
 	if config.Claude == "" {
-		config.Claude = "https://api.anthropic.com"
+		config.Claude = claudePlatform
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -94,13 +94,30 @@ func (r Registry) Get(id string) (Adapter, bool) {
 	return Adapter{}, false
 }
 
+func (a Adapter) HasExecutor() bool { return a.managed }
+
+func (a Adapter) Configurable() bool { return a.provisioner != nil }
+
+func (a Adapter) Direct() Adapter {
+	a.managed = false
+	return a
+}
+
+func (a Adapter) AcceptsDirectCredential() bool {
+	return validBase(a.Base) && (a.ID != "codex" || a.SupportsOAuth())
+}
+
+func (a Adapter) UsesClaudeConsole() bool {
+	return a.ID == "claude" && a.Base == claudePlatform
+}
+
 func (a Adapter) Configured() bool {
 	return a.managed || validBase(a.Base)
 }
 
 func validBase(base string) bool {
 	u, err := url.Parse(base)
-	return err == nil && u.Host != "" && u.User == nil && u.RawQuery == "" && u.Fragment == "" &&
+	return err == nil && u.Hostname() != "" && u.User == nil && !u.ForceQuery && u.RawQuery == "" && u.Fragment == "" &&
 		(u.Scheme == "https" || u.Scheme == "http")
 }
 
@@ -133,7 +150,7 @@ func validToken(token string) bool {
 	}) < 0
 }
 
-func (r Registry) Discover(ctx context.Context, a Adapter, credential Credential) ([]Model, error) {
+func (r Registry) modelDirectory(ctx context.Context, a Adapter, token string) ([]directoryModel, error) {
 	if !validBase(a.Base) || r.client == nil {
 		return nil, ErrDisabled
 	}
@@ -141,7 +158,7 @@ func (r Registry) Discover(ctx context.Context, a Adapter, credential Credential
 	if err != nil {
 		return nil, ErrDisabled
 	}
-	a.Protocol.Authorize(req.Header, credential.Token, nil)
+	a.Protocol.Authorize(req.Header, token, nil)
 	response, err := r.client.Do(req)
 	if err != nil {
 		return nil, ErrUpstream
@@ -156,12 +173,20 @@ func (r Registry) Discover(ctx context.Context, a Adapter, credential Credential
 	var result struct {
 		Data []directoryModel `json:"data"`
 	}
-	if err = json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&result); err != nil {
+	if err = json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&result); err != nil || result.Data == nil {
 		return nil, ErrUpstream
+	}
+	return result.Data, nil
+}
+
+func (r Registry) Discover(ctx context.Context, a Adapter, credential Credential) ([]Model, error) {
+	directory, err := r.modelDirectory(ctx, a, credential.Token)
+	if err != nil {
+		return nil, err
 	}
 	models := []Model{}
 	seen := map[string]bool{}
-	for _, item := range result.Data {
+	for _, item := range directory {
 		if !modelID.MatchString(item.ID) {
 			continue
 		}

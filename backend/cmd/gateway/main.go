@@ -81,7 +81,7 @@ func main() {
 		Coding: &coding.Service{Access: store, Catalog: registry, Metrics: metering.Store{DB: db}, Client: client(60 * time.Second)},
 		Console: console.Service{
 			DB: db, Store: store, Catalog: registry, PublicBase: public,
-			AccountsService: accountService,
+			AccountsService: accountService, OperatorUsername: access.NormalizeUsername(os.Getenv("BOOTSTRAP_USERNAME")),
 		},
 	}
 	workersDone := make(chan struct{})

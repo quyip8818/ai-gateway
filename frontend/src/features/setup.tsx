@@ -225,7 +225,13 @@ function ClientConfig({
   const origin = window.location.origin;
   const config = codex
     ? `model_provider = "gateway"\nmodel = ${JSON.stringify(model.id)}\n\n[model_providers.gateway]\nname = "AI Gateway"\nbase_url = "${origin}/openai/v1"\nenv_key = "GATEWAY_KEY"\nwire_api = "responses"\nsupports_websockets = false`
-    : `export ANTHROPIC_BASE_URL="${origin}/anthropic"\nexport ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY"\nexport ANTHROPIC_MODEL='${model.id.replaceAll("'", "'\\''")}'`;
+    : [
+        "env -u ANTHROPIC_API_KEY",
+        `  ANTHROPIC_BASE_URL="${origin}/anthropic"`,
+        '  ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY"',
+        `  ANTHROPIC_MODEL='${model.id.replaceAll("'", "'\\''")}'`,
+        "  claude",
+      ].join(" \\\n");
   return (
     <>
       <div className="model-summary">
@@ -237,7 +243,7 @@ function ClientConfig({
         先将调用密钥设置为环境变量 <code>GATEWAY_KEY</code>。
         {codex
           ? "将配置合并到 ~/.codex/config.toml。"
-          : "在启动 Claude Code 的终端运行以下命令。"}
+          : "运行以下命令启动 Claude Code。"}
       </p>
       <div className="code-block">
         <div>

@@ -65,6 +65,24 @@ func TestGateway(t *testing.T) {
 	var jimengProvisioned atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/codex-runtime/v8/management/credentials", "/kiro-runtime/api/admin/credentials":
+			if r.Header.Get("Authorization") != "Bearer fixture-management" {
+				w.WriteHeader(401)
+				return
+			}
+			if strings.HasPrefix(r.URL.Path, "/codex-runtime/") {
+				io.WriteString(w, `{"files":[]}`)
+			} else {
+				io.WriteString(w, `{"credentials":[]}`)
+			}
+		case "/codex-runtime/v1/models", "/kiro-runtime/v1/models":
+			codex := strings.HasPrefix(r.URL.Path, "/codex-runtime/")
+			if (codex && r.Header.Get("Authorization") != "Bearer fixture-runtime") ||
+				(!codex && r.Header.Get("x-api-key") != "fixture-runtime") {
+				w.WriteHeader(401)
+				return
+			}
+			io.WriteString(w, `{"data":[]}`)
 		case "/dashboard/login":
 			http.SetCookie(w, &http.Cookie{Name: "session", Value: "local-session", Path: "/"})
 			io.WriteString(w, `{"success":true}`)
@@ -297,12 +315,8 @@ func TestGateway(t *testing.T) {
 	defer stopWorker()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); m.Run(workerContext) }()
-	providerRegistry, err := providers.New(providers.Config{Codex: upstream.URL, Kiro: upstream.URL, Claude: upstream.URL}).WithExecutors(
-		[]providers.Executor{{Provider: "jimeng", URL: upstream.URL, Username: "fixture", Password: "fixture"}},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	username := "admin-" + platform.ID()
+	providerRegistry := providers.New(providers.Config{Codex: upstream.URL, Kiro: upstream.URL, Claude: upstream.URL})
 	providerRegistry, err = providerRegistry.WithCompatible([]providers.Compatible{{
 		ID: "lab", Label: "Lab", Base: upstream.URL, Protocol: protocol.Messages, CountTokens: true,
 	}})
@@ -312,7 +326,7 @@ func TestGateway(t *testing.T) {
 	providerRegistry = providerRegistry.WithOAuthClients(map[string]providers.OAuthClient{"codex": {
 		AuthorizeURL: "https://issuer.invalid/authorize", TokenURL: "https://issuer.invalid/token", ClientID: "fixture-client",
 	}})
-	server := httptest.NewServer((app.App{DB: db, Access: a, Coding: &coding.Service{Access: a, Catalog: c, Metrics: metering.Store{DB: db}, Client: upstream.Client()}, Media: m, Console: console.Service{DB: db, Store: a, Catalog: c, PublicBase: "http://console.local",
+	server := httptest.NewServer((app.App{DB: db, Access: a, Coding: &coding.Service{Access: a, Catalog: c, Metrics: metering.Store{DB: db}, Client: upstream.Client()}, Media: m, Console: console.Service{DB: db, Store: a, Catalog: c, PublicBase: "http://console.local", OperatorUsername: username,
 		AccountsService: accounts.Service{DB: db, Key: enc,
 			Providers: providerRegistry,
 		},
@@ -713,7 +727,6 @@ func TestGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	var user string
-	username := "admin-" + platform.ID()
 	if err = db.QueryRow(ctx, "INSERT INTO users(username,password_hash) VALUES($1,$2) RETURNING id", username, hash).Scan(&user); err != nil {
 		t.Fatal(err)
 	}
@@ -776,10 +789,46 @@ func TestGateway(t *testing.T) {
 		}
 		return result
 	}
+	const settingsPath = "/console/v1/provider-settings/jimeng"
+	send("GET", settingsPath, "", token, "", 403)
+	browse("PATCH", settingsPath, `{"download_hosts":["https://cdn.example.test"]}`, 400)
+	browse("PATCH", settingsPath, `{"download_hosts":["CDN.example.test","cdn.example.test"]}`, 204)
+	if result := browse("GET", settingsPath, "", 200); !strings.Contains(result, `"download_hosts":["cdn.example.test"]`) {
+		t.Fatal("download host settings were not normalized and persisted")
+	}
+	managedPayload := `{"url":"` + upstream.URL + `","username":"fixture","password":"executor-private-password"}`
+	browse("POST", settingsPath, managedPayload, 204)
+	var runtime struct {
+		Executors []struct{ ID, URL string }
+	}
+	status := browse("GET", settingsPath, "", 200)
+	if err := json.Unmarshal([]byte(status), &runtime); err != nil || len(runtime.Executors) != 1 ||
+		runtime.Executors[0].ID == "" || strings.Contains(status, "executor-private-password") {
+		t.Fatalf("invalid executor settings metadata: %v", err)
+	}
 	jimeng := enroll("jimeng", "sessionid=fixture-cookie")
+	browse("DELETE", settingsPath+"/executors/"+runtime.Executors[0].ID, "", 409)
 	browse("POST", base+"/account-enrollments", `{"provider":"jimeng","credential":"sessionid=fixture-cookie"}`, 409)
 	codex := enroll("codex", `{"tokens":{"access_token":"codex-oauth"}}`)
-	kiro := enroll("kiro", `{"accessToken":"kiro-token"}`)
+	browse("PUT", "/console/v1/provider-settings/kiro", `{"base_url":"`+upstream.URL+`","oauth":{"authorize_url":"https://issuer.invalid/authorize","token_url":"https://issuer.invalid/token","client_id":"kiro-client"}}`, 204)
+	for _, id := range []string{"codex", "kiro"} {
+		path := "/console/v1/provider-settings/" + id
+		config := `{"url":"` + upstream.URL + "/" + id + `-runtime","management_key":"fixture-management","runtime_key":"fixture-runtime"}`
+		browse("POST", path, config, 204)
+		if settings := browse("GET", path, "", 200); !strings.Contains(settings, id+"-runtime") || strings.Contains(settings, "fixture-management") {
+			t.Fatalf("invalid settings metadata for %s", id)
+		}
+	}
+	browse("PUT", "/console/v1/provider-settings/kiro", `{"base_url":"`+upstream.URL+`/"}`, 204)
+	if settings := browse("GET", "/console/v1/provider-settings/kiro", "", 200); !strings.Contains(settings, `"oauth_configured":true`) {
+		t.Fatal("editing the address alone erased browser authorization")
+	}
+	var kiro enrollment
+	if err := json.Unmarshal([]byte(browse("POST", base+"/account-enrollments",
+		`{"provider":"kiro","direct":true,"credential":"{\"accessToken\":\"kiro-token\",\"refreshToken\":\"unused-refresh\"}"}`,
+		201)), &kiro); err != nil || kiro.PoolID == "" {
+		t.Fatalf("direct Kiro enrollment: %v", err)
+	}
 	claude := enroll("claude", "claude-token")
 	lab := enroll("lab", "lab-token")
 	var pooledKey struct{ ID, Key string }

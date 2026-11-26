@@ -39,9 +39,16 @@ func (s Service) RefreshDue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	registry, err := s.Registry(ctx)
+	if err != nil {
+		// No token exchange was attempted, so the claim can safely be retried.
+		_, releaseErr := s.DB.Exec(ctx, `UPDATE upstream_accounts SET refresh_state='ready',refresh_deadline=NULL
+ WHERE id=$1 AND credential_version=$2 AND refresh_state='refreshing'`, claim.account, claim.version)
+		return errors.Join(err, releaseErr)
+	}
 	request, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if err := s.refresh(request, claim); err != nil {
+	if err := s.refresh(request, registry, claim); err != nil {
 		_, updateErr := s.DB.Exec(ctx, `UPDATE upstream_accounts SET refresh_state='reauthorize',refresh_deadline=NULL
  WHERE id=$1 AND credential_version=$2 AND refresh_state='refreshing'`, claim.account, claim.version)
 		return updateErr
@@ -49,8 +56,8 @@ func (s Service) RefreshDue(ctx context.Context) error {
 	return nil
 }
 
-func (s Service) refresh(ctx context.Context, claim refreshClaim) error {
-	adapter, ok := s.Providers.Get(claim.provider)
+func (s Service) refresh(ctx context.Context, registry providers.Registry, claim refreshClaim) error {
+	adapter, ok := registry.Get(claim.provider)
 	if !ok {
 		return providers.ErrDisabled
 	}
@@ -58,7 +65,7 @@ func (s Service) refresh(ctx context.Context, claim refreshClaim) error {
 	if err != nil {
 		return err
 	}
-	next, err := s.Providers.Refresh(ctx, adapter, providers.Credential{RefreshToken: refreshToken, Personal: true})
+	next, err := registry.Refresh(ctx, adapter, providers.Credential{RefreshToken: refreshToken, Personal: true})
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"strconv"
@@ -14,37 +15,16 @@ func (r Registry) provisionJimeng(ctx context.Context, adapter Adapter, executor
 	if !adapter.Configured() || executor.Username == "" || executor.Password == "" {
 		return Prepared{}, ErrDisabled
 	}
-	jar, _ := cookiejar.New(nil)
-	client := *r.client
-	client.Jar = jar
-	base, _ := url.Parse(adapter.Base)
-	var ok struct{ Success bool }
-	if err := executorCall(ctx, &client, adapter.Base, "", "POST", "/dashboard/login", map[string]string{
-		"username": executor.Username, "password": executor.Password,
-	}, &ok); err != nil || !ok.Success || len(jar.Cookies(base)) == 0 {
-		return Prepared{}, ErrUpstream
-	}
-	logout := func() {
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = executorCall(cleanup, &client, adapter.Base, "", "POST", "/dashboard/logout", nil, nil)
-	}
-	var pool []json.RawMessage
-	var keys []json.RawMessage
-	if err := executorCall(ctx, &client, adapter.Base, "", "GET", "/account-pool/", nil, &pool); err != nil {
-		logout()
+	client, logout, err := r.jimengSession(ctx, executor)
+	if err != nil {
 		return Prepared{}, err
 	}
-	if err := executorCall(ctx, &client, adapter.Base, "", "GET", "/dashboard/keys", nil, &keys); err != nil {
+	if err := freeJimeng(ctx, client, executor.URL); err != nil {
 		logout()
 		return Prepared{}, err
-	}
-	if len(pool) != 0 || len(keys) != 0 {
-		logout()
-		return Prepared{}, ErrNoExecutor
 	}
 	var status struct{ Live bool }
-	if err := executorCall(ctx, &client, adapter.Base, "", "POST", "/token/check", map[string]string{"token": session}, &status); err != nil {
+	if err := executorCall(ctx, client, adapter.Base, "", "POST", "/token/check", map[string]string{"token": session}, &status); err != nil {
 		logout()
 		return Prepared{}, err
 	}
@@ -62,20 +42,20 @@ func (r Registry) provisionJimeng(ctx context.Context, adapter Adapter, executor
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if issued.APIKey.ID > 0 {
-			_ = executorCall(ctx, &client, adapter.Base, "", "DELETE", "/dashboard/keys/"+strconv.Itoa(issued.APIKey.ID), nil, nil)
+			_ = executorCall(ctx, client, adapter.Base, "", "DELETE", "/dashboard/keys/"+strconv.Itoa(issued.APIKey.ID), nil, nil)
 		}
 		if account.ID != "" {
-			_ = executorCall(ctx, &client, adapter.Base, "", "DELETE", "/account-pool/"+url.PathEscape(account.ID), nil, nil)
+			_ = executorCall(ctx, client, adapter.Base, "", "DELETE", "/account-pool/"+url.PathEscape(account.ID), nil, nil)
 		}
 		logout()
 	}
-	if err := executorCall(ctx, &client, adapter.Base, "", "POST", "/account-pool/", map[string]string{
+	if err := executorCall(ctx, client, adapter.Base, "", "POST", "/account-pool/", map[string]string{
 		"name": name, "sessionId": session,
 	}, &account); err != nil || account.ID == "" {
 		cleanup()
 		return Prepared{}, ErrUpstream
 	}
-	if err := executorCall(ctx, &client, adapter.Base, "", "POST", "/dashboard/keys", map[string]string{"name": name}, &issued); err != nil ||
+	if err := executorCall(ctx, client, adapter.Base, "", "POST", "/dashboard/keys", map[string]string{"name": name}, &issued); err != nil ||
 		issued.APIKey.ID <= 0 || issued.Key == "" {
 		cleanup()
 		return Prepared{}, ErrUpstream
@@ -93,4 +73,45 @@ func (r Registry) provisionJimeng(ctx context.Context, adapter Adapter, executor
 		}
 	}
 	return Prepared{Base: adapter.Base, Token: issued.Key, Models: models, Cleanup: cleanup, Finish: logout, Managed: true}, nil
+}
+
+func (r Registry) jimengSession(ctx context.Context, executor Executor) (*http.Client, func(), error) {
+	jar, _ := cookiejar.New(nil)
+	client := *r.client
+	client.Jar = jar
+	base, _ := url.Parse(executor.URL)
+	var ok struct{ Success bool }
+	if err := executorCall(ctx, &client, executor.URL, "", "POST", "/dashboard/login", map[string]string{
+		"username": executor.Username, "password": executor.Password,
+	}, &ok); err != nil || !ok.Success || len(jar.Cookies(base)) == 0 {
+		return nil, nil, ErrUpstream
+	}
+	logout := func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = executorCall(cleanup, &client, executor.URL, "", "POST", "/dashboard/logout", nil, nil)
+	}
+	return &client, logout, nil
+}
+
+func (r Registry) probeJimeng(ctx context.Context, _ Adapter, executor Executor) error {
+	client, logout, err := r.jimengSession(ctx, executor)
+	if err != nil {
+		return err
+	}
+	defer logout()
+	return freeJimeng(ctx, client, executor.URL)
+}
+
+func freeJimeng(ctx context.Context, client *http.Client, base string) error {
+	for _, path := range []string{"/account-pool/", "/dashboard/keys"} {
+		var entries []json.RawMessage
+		if err := executorCall(ctx, client, base, "", "GET", path, nil, &entries); err != nil || entries == nil {
+			return ErrUpstream
+		}
+		if len(entries) > 0 {
+			return ErrNoExecutor
+		}
+	}
+	return nil
 }

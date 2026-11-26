@@ -1,26 +1,12 @@
 import { useState } from "react";
-import type { FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, date, projectURL, useResource, workspaceURL } from "../api";
 import type { Collection, Pool, Project } from "../api";
-import {
-  Dialog,
-  Empty,
-  Loading,
-  Notice,
-  Page,
-  Panel,
-  Status,
-} from "../components";
+import { Empty, Loading, Notice, Page, Panel, Status } from "../components";
 
-type Provider = {
-  id: string;
-  name: string;
-  format: string;
-  credential_label: string;
-  configured: boolean;
-  authorize: boolean;
-};
+import { Enroll } from "./account-enrollment";
+import type { Provider } from "./account-enrollment";
+
 type Account = {
   id: string;
   label: string;
@@ -251,159 +237,11 @@ export function Admin({ project }: { project: Project }) {
             setAdding(false);
             setFilter("");
             setCreatedPool(pool);
+            providers.refresh();
             refresh();
           }}
         />
       )}
     </Page>
-  );
-}
-
-function Enroll({
-  base,
-  providers,
-  error: loadError,
-  retry,
-  initial,
-  close,
-  done,
-}: {
-  base: string;
-  providers?: Provider[];
-  error?: string;
-  retry: () => void;
-  initial: string;
-  close: () => void;
-  done: (pool: string) => void;
-}) {
-  const [selected, select] = useState(initial);
-  const [method, setMethod] = useState("import");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const provider = providers?.find((item) => item.id === selected);
-  const oauth =
-    !!provider?.authorize && (method === "oauth" || !provider.configured);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (busy || !provider || (!oauth && !provider.configured)) return;
-    const form = new FormData(event.currentTarget);
-    setBusy(true);
-    setError("");
-    try {
-      if (oauth) {
-        const response = await api<{ authorization_url: string }>(
-          base + "/account-authorizations",
-          { provider: provider.id },
-        );
-        window.location.assign(response.authorization_url);
-      } else {
-        const input = form.get("credential");
-        if (input instanceof File && input.size > 60 * 1024)
-          throw new Error("授权文件不能超过 60 KiB。");
-        const credential =
-          input instanceof File
-            ? await input.text()
-            : String(input ?? "").trim();
-        const response = await api<{ pool_id: string }>(
-          base + "/account-enrollments",
-          { provider: provider.id, credential },
-        );
-        done(response.pool_id);
-      }
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Dialog title="添加上游账号" busy={busy} close={close}>
-      <Notice error={loadError} retry={retry} />
-      <form onSubmit={submit}>
-        <label>
-          供应商
-          <select
-            autoFocus
-            required
-            disabled={busy || !providers}
-            value={selected}
-            onChange={(e) => {
-              select(e.target.value);
-              setMethod("import");
-              setError("");
-            }}
-          >
-            <option value="">选择供应商</option>
-            {providers?.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-                {item.configured || item.authorize ? "" : " · 尚未配置"}
-              </option>
-            ))}
-          </select>
-        </label>
-        {provider?.authorize && provider.configured && (
-          <label>
-            授权方式
-            <select
-              value={method}
-              disabled={busy}
-              onChange={(e) => {
-                setMethod(e.target.value);
-                setError("");
-              }}
-            >
-              <option value="import">导入已有凭证</option>
-              <option value="oauth">浏览器授权</option>
-            </select>
-          </label>
-        )}
-        {provider?.configured && !oauth && (
-          <label key={provider.id}>
-            {provider.credential_label}
-            {provider.format === "auth.json" ? (
-              <input
-                name="credential"
-                type="file"
-                accept=".json,application/json"
-                required
-                disabled={busy}
-              />
-            ) : (
-              <input
-                name="credential"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                required
-                disabled={busy}
-              />
-            )}
-          </label>
-        )}
-        {provider && !provider.authorize && !provider.configured && (
-          <p className="muted">联系部署管理员配置此供应商的执行器。</p>
-        )}
-        {oauth && (
-          <p className="muted">完成供应商授权后，浏览器会返回此页面。</p>
-        )}
-        <Notice error={error} />
-        <div className="actions">
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy}
-            onClick={close}
-          >
-            取消
-          </button>
-          <button disabled={busy || (!oauth && !provider?.configured)}>
-            {busy ? "正在验证…" : oauth ? "继续授权" : "验证并添加"}
-          </button>
-        </div>
-      </form>
-    </Dialog>
   );
 }

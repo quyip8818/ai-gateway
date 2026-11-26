@@ -74,6 +74,31 @@ func TestSchemaVersionBoundary(t *testing.T) {
 	if err = schema.Check(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = db.Exec(ctx, `INSERT INTO tenants(name) VALUES('existing');
+ ALTER TABLE account_authorizations DROP COLUMN client_digest;
+ DROP TABLE provider_executors,provider_settings,media_download_hosts;
+ UPDATE gateway_schema SET version=1`); err != nil {
+		t.Fatal(err)
+	}
+	if err = schema.Initialize(ctx, db); err != nil {
+		t.Fatalf("v1 upgrade: %v", err)
+	}
+	if _, err = db.Exec(ctx, `INSERT INTO media_download_hosts(hostname) VALUES('cdn.example.test');
+ UPDATE gateway_schema SET version=2`); err != nil {
+		t.Fatal(err)
+	}
+	if err = schema.Initialize(ctx, db); err != nil {
+		t.Fatalf("preview upgrade: %v", err)
+	}
+	var version int
+	var host string
+	if err = db.QueryRow(ctx, "SELECT version,hostname FROM gateway_schema CROSS JOIN media_download_hosts").Scan(&version, &host); err != nil || version != 1 || host != "cdn.example.test" {
+		t.Fatalf("older binaries cannot reopen the database or preview settings were lost: version %d, %s, %v", version, host, err)
+	}
+	var retained string
+	if err = db.QueryRow(ctx, "SELECT name FROM tenants").Scan(&retained); err != nil || retained != "existing" {
+		t.Fatalf("v1 data did not survive: %v", err)
+	}
 	if _, err = db.Exec(ctx, "UPDATE gateway_schema SET version=999"); err != nil {
 		t.Fatal(err)
 	}

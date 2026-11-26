@@ -14,11 +14,12 @@ import (
 )
 
 type Service struct {
-	AccountsService accounts.Service
-	DB              *pgxpool.Pool
-	Store           access.Store
-	Catalog         catalog.Store
-	PublicBase      string
+	AccountsService  accounts.Service
+	DB               *pgxpool.Pool
+	Store            access.Store
+	Catalog          catalog.Store
+	PublicBase       string
+	OperatorUsername string
 }
 
 func (s Service) Origin(w http.ResponseWriter, r *http.Request) bool {

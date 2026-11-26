@@ -158,6 +158,7 @@ try {
     childEnv: { ...env, BOOTSTRAP_USERNAME: username },
     input: password,
   });
+  env.BOOTSTRAP_USERNAME = username;
   const gateway = start(gatewayBinary, []);
   console.log(`控制台 ${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/app/`);
   const ended = await Promise.race([

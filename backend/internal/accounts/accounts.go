@@ -66,7 +66,19 @@ func (s Service) Save(ctx context.Context, who access.Identity, adapter provider
 	if duplicate {
 		return Account{}, ErrDuplicate
 	}
-	prepared, err := s.Providers.Prepare(ctx, adapter, credential, name, id, reserved)
+	var registry providers.Registry
+	if tx != nil {
+		registry, err = s.registry(ctx, tx)
+	} else {
+		registry, err = s.Registry(ctx)
+	}
+	if err != nil {
+		return Account{}, err
+	}
+	if !registry.MatchesSettings(adapter) {
+		return Account{}, ErrSettingsInUse
+	}
+	prepared, err := registry.Prepare(ctx, adapter, credential, name, id, reserved)
 	if err != nil {
 		return Account{}, err
 	}
@@ -98,6 +110,15 @@ func (s Service) Save(ctx context.Context, who access.Identity, adapter provider
 			return Account{}, err
 		}
 		defer tx.Rollback(ctx)
+	}
+	if !prepared.Managed {
+		registry, err = s.LockedRegistry(ctx, tx)
+		if err != nil {
+			return Account{}, err
+		}
+		if !registry.MatchesSettings(adapter) {
+			return Account{}, ErrSettingsInUse
+		}
 	}
 	var project string
 	if err = tx.QueryRow(ctx, "SELECT id FROM projects WHERE id=$1 AND enabled FOR UPDATE", who.Project).Scan(&project); err != nil {
@@ -148,10 +169,14 @@ type rowQuerier interface {
 
 func reserveExecutors(ctx context.Context, tx pgx.Tx) (map[string]bool, error) {
 	// Serialize dedicated runtime assignments across projects, including cleanup.
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(61912343)"); err != nil {
+	if _, err := tx.Exec(ctx, executorLock); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, "SELECT base_url FROM upstream_accounts WHERE managed")
+	return occupiedExecutors(ctx, tx)
+}
+
+func occupiedExecutors(ctx context.Context, db queryer) (map[string]bool, error) {
+	rows, err := db.Query(ctx, "SELECT base_url FROM upstream_accounts WHERE managed")
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +186,7 @@ func reserveExecutors(ctx context.Context, tx pgx.Tx) (map[string]bool, error) {
 	}
 	reserved := make(map[string]bool, len(urls))
 	for _, address := range urls {
-		reserved[address] = true
+		reserved[providers.NormalizeExecutorURL(address)] = true
 	}
 	return reserved, nil
 }

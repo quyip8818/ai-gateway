@@ -348,7 +348,14 @@ export function JobDetail({ project }: { project: Project }) {
       {data && (
         <div className="columns">
           <Panel title="生成结果" actions={<Status value={data.status} />}>
-            <Notice error={error || data.error?.code} />
+            <Notice
+              error={
+                error ||
+                (data.error?.code === "download_host_not_allowed"
+                  ? "成品下载地址待确认。管理员可在即梦接入设置中添加可信 CDN 主机名，任务会自动重试。"
+                  : data.error?.code)
+              }
+            />
             {data.status === "submit_unknown" && (
               <Empty title="上游受理情况待核验">
                 在请求记录中查看尝试详情。请先确认上游状态，再决定是否重新提交。

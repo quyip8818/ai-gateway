@@ -372,7 +372,7 @@ func (s *Service) download(ctx context.Context, w work, r catalog.Target) {
 	if resp.StatusCode == 302 || resp.StatusCode == 303 || resp.StatusCode == 307 {
 		dst, err := resp.Location()
 		resp.Body.Close()
-		if err != nil || !s.downloadAllowed(dst) {
+		if err != nil || !s.downloadAllowed(ctx, dst) {
 			if err == nil {
 				log.Printf("media job %s: video download redirect blocked for host %q", w.ID, dst.Hostname())
 			}
@@ -406,8 +406,15 @@ func (s *Service) download(ctx context.Context, w work, r catalog.Target) {
 	}
 }
 
-func (s *Service) downloadAllowed(u *url.URL) bool {
-	return u != nil && u.Scheme == "https" && u.User == nil && (u.Port() == "" || u.Port() == "443") && s.DownloadHosts[strings.ToLower(u.Hostname())]
+func (s *Service) downloadAllowed(ctx context.Context, u *url.URL) bool {
+	if u == nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if s.DownloadHosts[host] {
+		return true
+	}
+	return (DownloadHostStore{DB: s.DB}).Allows(ctx, host)
 }
 
 func (s *Service) finish(w work, body io.Reader, mime string, max int64, credits ...json.Number) error {

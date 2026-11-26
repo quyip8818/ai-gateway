@@ -9,7 +9,10 @@ import (
 	"ai-gateway/internal/protocol"
 )
 
-const openAIPlatform = "https://api.openai.com"
+const (
+	openAIPlatform = "https://api.openai.com"
+	claudePlatform = "https://api.anthropic.com"
+)
 
 func builtins(config Config) []Adapter {
 	return []Adapter{
@@ -17,6 +20,7 @@ func builtins(config Config) []Adapter {
 			Base: strings.TrimRight(config.Jimeng, "/"), parse: parseJimengCookie, model: jimengModel,
 			provisioner: &provisioner{
 				validate: func(executor Executor) bool { return executor.Username != "" && executor.Password != "" },
+				probe:    Registry.probeJimeng,
 				run: func(r Registry, ctx context.Context, adapter Adapter, executor Executor, credential Credential, name, _ string) (Prepared, error) {
 					return r.provisionJimeng(ctx, adapter, executor, credential.Token, name)
 				},
@@ -24,12 +28,12 @@ func builtins(config Config) []Adapter {
 		{ID: "codex", Label: "Codex", Format: "auth.json", CredentialLabel: "auth.json 授权文件", Protocol: protocol.Responses,
 			Base: strings.TrimRight(config.Codex, "/"), parse: parseCodexFile,
 			oauth:       func(a Adapter) bool { return a.Base != openAIPlatform },
-			provisioner: textProvisioner(parseManagedCodex, importCodex)},
+			provisioner: textProvisioner(parseManagedCodex, freeCodex, importCodex)},
 		{ID: "kiro", Label: "Kiro", Format: "auth.json", CredentialLabel: "Kiro 授权文件", Protocol: protocol.Messages,
 			Base: strings.TrimRight(config.Kiro, "/"), parse: parseKiroFile,
 			oauth:       func(Adapter) bool { return true },
-			provisioner: textProvisioner(parseManagedKiro, importKiro)},
-		{ID: "claude", Label: "Claude", Format: "platform_key", CredentialLabel: "Anthropic Console 密钥", Protocol: protocol.Messages,
+			provisioner: textProvisioner(parseManagedKiro, freeKiro, importKiro)},
+		{ID: "claude", Label: "Claude", Format: "platform_key", CredentialLabel: "Claude Console API Key", Protocol: protocol.Messages,
 			Base: strings.TrimRight(config.Claude, "/"), parse: parsePlatformKey, CountTokens: true},
 	}
 }

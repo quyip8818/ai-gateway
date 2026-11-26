@@ -9,7 +9,8 @@ const errors: Record<string, string> = {
   credential_adapter_unavailable: "此授权方式需要部署方配置兼容执行器。",
   account_validation_unavailable:
     "无法验证上游账号或获取模型，请检查执行器连接。",
-  no_available_account_executor: "没有空闲的专用执行器，请联系部署管理员。",
+  no_available_account_executor:
+    "没有空闲的专用实例。可以在接入设置中连接另一个空实例。",
   provider_unconfigured: "此供应商的执行器尚未配置。",
   account_already_imported: "这份凭证已经导入。",
   authorization_unavailable: "暂时无法开始或读取账号授权。",
@@ -210,6 +211,7 @@ const labels: Record<string, string> = {
   reauthorize: "需重新授权",
   expired: "已过期",
   ready: "可用",
+  occupied: "已分配",
   verifying: "验证中",
 };
 export function Status({ value }: { value: unknown }) {

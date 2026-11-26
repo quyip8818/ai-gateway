@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -24,6 +23,7 @@ type Executor struct {
 type provisioner struct {
 	parse    func(string) (Credential, error)
 	validate func(Executor) bool
+	probe    func(Registry, context.Context, Adapter, Executor) error
 	run      func(Registry, context.Context, Adapter, Executor, Credential, string, string) (Prepared, error)
 }
 
@@ -41,8 +41,11 @@ func (r Registry) WithExecutors(executors []Executor) (Registry, error) {
 	seen := make(map[string]bool)
 	r.adapters = append([]Adapter(nil), r.adapters...)
 	r.executors = append([]Executor(nil), executors...)
+	for i := range r.adapters {
+		r.adapters[i].managed = false
+	}
 	for i, executor := range r.executors {
-		executor.URL = strings.TrimRight(executor.URL, "/")
+		executor.URL = NormalizeExecutorURL(executor.URL)
 		r.executors[i] = executor
 		if seen[executor.URL] || !validBase(executor.URL) {
 			return Registry{}, ErrDisabled
@@ -60,6 +63,14 @@ func (r Registry) WithExecutors(executors []Executor) (Registry, error) {
 		}
 	}
 	return r, nil
+}
+
+func (r Registry) ProbeExecutor(ctx context.Context, e Executor) error {
+	adapter, ok := r.Get(e.Provider)
+	if !ok || !adapter.Configurable() || !adapter.provisioner.validate(e) || !validBase(e.URL) {
+		return ErrDisabled
+	}
+	return adapter.provisioner.probe(r, ctx, adapter, e)
 }
 
 func (a Adapter) UsesManagedExecutor(credential Credential) bool {

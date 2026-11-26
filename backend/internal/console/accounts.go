@@ -12,12 +12,34 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s Service) Providers(w http.ResponseWriter, _ *http.Request, _ access.Identity) {
+func (s Service) Providers(w http.ResponseWriter, r *http.Request, _ access.Identity) {
+	registry, err := s.AccountsService.Registry(r.Context())
+	if err != nil {
+		platform.Error(w, 503, "provider_settings_unavailable")
+		return
+	}
+	free, err := s.AccountsService.FreeExecutors(r.Context(), registry)
+	if err != nil {
+		platform.Error(w, 503, "provider_settings_unavailable")
+		return
+	}
+	operator := s.operator(r)
 	data := []map[string]any{}
-	for _, adapter := range s.AccountsService.Providers.All() {
+	for _, adapter := range registry.All() {
+		label, keyURL := adapter.CredentialLabel, ""
+		if adapter.UsesClaudeConsole() {
+			keyURL = "https://platform.claude.com/settings/keys"
+		} else if adapter.ID == "claude" {
+			label = "兼容服务 API Key"
+		}
 		data = append(data, map[string]any{
 			"id": adapter.ID, "name": adapter.Label, "format": adapter.Format, "configured": adapter.Configured(), "authorize": adapter.CanAuthorize(),
-			"credential_label": adapter.CredentialLabel, "protocol": adapter.Protocol,
+			"credential_label": label, "credential_url": keyURL, "protocol": adapter.Protocol,
+			"can_configure":     operator && adapter.Configurable(),
+			"can_import_file":   free[adapter.ID] > 0,
+			"can_import_cookie": adapter.ID == "jimeng" && free[adapter.ID] > 0,
+			"can_import_direct": adapter.Configurable() && adapter.AcceptsDirectCredential(),
+			"executor_full":     adapter.HasExecutor() && free[adapter.ID] == 0,
 		})
 	}
 	platform.JSON(w, http.StatusOK, map[string]any{"data": data})
@@ -49,11 +71,20 @@ func (s Service) EnrollAccount(w http.ResponseWriter, r *http.Request, who acces
 	}
 	var input struct {
 		Provider, Label, Credential string
+		Direct                      bool
 	}
 	if !Decode(w, r, &input) {
 		return
 	}
-	adapter, ok := s.AccountsService.Providers.Get(input.Provider)
+	registry, err := s.AccountsService.Registry(r.Context())
+	if err != nil {
+		platform.Error(w, 503, "provider_settings_unavailable")
+		return
+	}
+	adapter, ok := registry.Get(input.Provider)
+	if input.Direct {
+		adapter = adapter.Direct()
+	}
 	if !ok || !adapter.Configured() {
 		platform.Error(w, 400, "provider_unconfigured")
 		return
@@ -75,6 +106,8 @@ func (s Service) EnrollAccount(w http.ResponseWriter, r *http.Request, who acces
 		platform.Error(w, 502, "account_validation_unavailable")
 	case errors.Is(err, accounts.ErrDuplicate):
 		platform.Error(w, 409, "account_already_imported")
+	case errors.Is(err, accounts.ErrSettingsInUse):
+		platform.Error(w, 409, "provider_settings_in_use")
 	case err != nil:
 		platform.Error(w, 503, "account_store_unavailable")
 	default:

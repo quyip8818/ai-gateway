@@ -18,9 +18,11 @@
 | 即梦 | 包含 `sessionid` 的账号 Cookie | 网关在专用 `jimeng-api` 实例验证 Cookie、添加账号并签发内部调用凭证。 |
 | Codex | Codex `auth.json` | CLI 账号文件导入专用 CLIProxyAPI v8；带 `OPENAI_API_KEY` 的文件可直连 OpenAI Platform。 |
 | Kiro | 含 `refreshToken` 的授权 JSON | 导入专用 kiro2api，执行器负责令牌续期。Builder ID 或 IAM Identity Center 导出还需匹配的客户端字段。公开入口使用 Anthropic Messages。 |
-| Claude | Anthropic Console 密钥 | 直连 Anthropic API，公开入口使用 Anthropic Messages。 |
+| Claude | [Claude Console](https://platform.claude.com/settings/keys) 中已绑定工作区的 API Key | 在「上游账号 → 添加账号 → Claude」粘贴即可验证。账号入池后签发网关 Key，在「使用网关 → Claude Code」复制客户端配置。 |
 
-部署方用 `ACCOUNT_EXECUTORS_FILE` 指向私有 JSON 配置。每个实例从空账号池启动，由网关独占，一个实例对应一个导入账号。执行器只在私有网络监听，管理凭证和内部调用凭证保存在部署配置中。
+用部署时设置的管理员登录，在「上游账号 → 添加账号」选择即梦、Codex 或 Kiro，从「连接供应商」或「接入设置」验证服务。该入口由 `BOOTSTRAP_USERNAME` 授权，直接启动时也要设置这个变量。专用实例需要先运行，服务地址与管理凭证验证成功后即可继续输入 Cookie 或上传授权文件。Codex 也可直接填写 OpenAI API Key。已登记但尚未分配的实例可在接入设置中移除。
+
+部署方也可用 `ACCOUNT_EXECUTORS_FILE` 指向私有 JSON 配置。每个实例从空账号池启动，由网关独占，一个实例对应一个导入账号。执行器只在私有网络监听。控制台设置优先于同地址的部署配置，管理凭证加密保存。
 
 ```json
 [
@@ -30,7 +32,7 @@
 ]
 ```
 
-- 即梦使用 [jimeng-free-api-all](https://github.com/zhizinan1997/jimeng-free-api-all) 的账号池、图片和异步视频 API。为成品重定向配置允许的 CDN 主机名 `JIMENG_DOWNLOAD_HOSTS`。视频始终回原执行器查询。
+- 即梦使用 [jimeng-free-api-all](https://github.com/zhizinan1997/jimeng-free-api-all) 的账号池、图片和异步视频 API。成品重定向使用的可信 CDN 主机名可在「即梦 → 接入设置 → 视频下载域名」管理，也可通过 `JIMENG_DOWNLOAD_HOSTS` 指定。视频始终回原执行器查询。
 - Codex 执行器启用 [CLIProxyAPI v8 管理 API](https://github.com/router-for-me/CLIProxyAPIDocs/blob/main/docs/en/management/apiv8.md)，使用独立、可写的凭证目录，并将 `runtime_key` 配到客户端 Key 列表。
 - Kiro 执行器用 [kiro2api](https://github.com/xwteam/kiro2api/blob/main/docs/en/API.md) 的管理接口导入和验证模型，分别配置其管理 Key 和调用 Key，并存储到独立的数据卷。
 
@@ -52,7 +54,7 @@
 
 ## 版本切换
 
-账号池版使用从空库初始化的数据库。启动和初始化命令会检查结构版本，发现旧原型库或版本不匹配时在写入前退出。若要保留旧数据，可给账号池版指定独立的新数据库或数据卷。
+已有账号池数据库使用 `gatewayctl init-db` 增加供应商设置表，保留账号、Key、任务和部署配置。升级保留核心版本 1，上一版网关可在原库重新启动。空库也使用同一命令初始化。无版本的旧原型库需要使用单独的数据库或数据卷。
 
 调用端的 Responses、Messages 与媒体 API 路径延续。公开模型 ID 使用 `<账号池>/<模型>`，客户端更新模型配置并使用新签发的池授权 Key。旧的手工连接、模型路由和计费试算入口已退役。
 

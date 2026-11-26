@@ -28,10 +28,14 @@ func (p Kind) DefaultOperation() string {
 
 func (p Kind) Authorize(headers http.Header, token string, caller http.Header) {
 	if p != Messages {
-		headers.Set("Authorization", "Bearer "+token)
+		if token != "" {
+			headers.Set("Authorization", "Bearer "+token)
+		}
 		return
 	}
-	headers.Set("x-api-key", token)
+	if token != "" {
+		headers.Set("x-api-key", token)
+	}
 	version := caller.Get("anthropic-version")
 	if version == "" {
 		version = "2023-06-01"
