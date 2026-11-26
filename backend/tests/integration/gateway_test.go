@@ -27,7 +27,7 @@ import (
 	"ai-gateway/internal/media"
 	"ai-gateway/internal/metering"
 	"ai-gateway/internal/platform"
-	"ai-gateway/migrations"
+	"ai-gateway/internal/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -44,8 +44,10 @@ func TestGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := migrations.Apply(ctx, db); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err := schema.Initialize(ctx, db); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var calls atomic.Int32
 	var sawReference atomic.Bool
@@ -592,8 +594,8 @@ func TestGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	var user string
-	email := platform.ID() + "@example.test"
-	if err = db.QueryRow(ctx, "INSERT INTO users(email,password_hash) VALUES($1,$2) RETURNING id", email, hash).Scan(&user); err != nil {
+	username := "admin-" + platform.ID()
+	if err = db.QueryRow(ctx, "INSERT INTO users(username,password_hash) VALUES($1,$2) RETURNING id", username, hash).Scan(&user); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(ctx, "UPDATE project_principals SET user_id=$2,role='admin' WHERE id=$1", owner.Principal, user); err != nil {
@@ -620,7 +622,7 @@ func TestGateway(t *testing.T) {
 		}
 		return string(raw)
 	}
-	browse("POST", "/console/v1/session", `{"email":"`+email+`","password":"fixture-password"}`, 200)
+	browse("POST", "/console/v1/session", `{"username":"`+username+`","password":"fixture-password"}`, 200)
 	base := "/console/v1/projects/" + owner.Project
 	draft := `{"model":"local","upstream":"local","operation":"responses","connection":"` + primary + `","backup":"` + backup + `"}`
 	browse("POST", base+"/routes/validate", draft, 200)
@@ -698,12 +700,7 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("billing amount did not use original price: %v", err)
 	}
 	browse("GET", base+"/usage/export", "", 200)
-	var invite struct{ Token string }
-	if err = json.Unmarshal([]byte(browse("POST", base+"/invitations", `{"email":"`+platform.ID()+`@example.test"}`, 201)), &invite); err != nil {
-		t.Fatal(err)
-	}
-	browse("POST", "/console/v1/invitations/accept", `{"token":"`+invite.Token+`","password":"fixture-member"}`, 204)
-	browse("POST", "/console/v1/invitations/accept", `{"token":"`+invite.Token+`","password":"fixture-member"}`, 404)
+	browse("GET", base+"/members", "", 200)
 	if _, err = db.Exec(ctx, "UPDATE api_keys SET revoked_at=now() WHERE principal_id=$1", owner.Principal); err != nil {
 		t.Fatal(err)
 	}

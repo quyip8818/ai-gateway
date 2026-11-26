@@ -7,17 +7,18 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"ai-gateway/internal/access"
 	"ai-gateway/internal/platform"
-	"ai-gateway/migrations"
+	"ai-gateway/internal/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: gatewayctl migrate up | gatewayctl bootstrap [--if-empty]")
+		log.Fatal("usage: gatewayctl init-db | gatewayctl bootstrap [--if-empty]")
 	}
 	ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()
@@ -31,11 +32,11 @@ func main() {
 	}
 	defer db.Close()
 	switch os.Args[1] {
-	case "migrate":
-		if len(os.Args) != 3 || os.Args[2] != "up" {
-			log.Fatal("usage: gatewayctl migrate up")
+	case "init-db":
+		if len(os.Args) != 2 {
+			log.Fatal("usage: gatewayctl init-db")
 		}
-		if err = migrations.Apply(ctx, db); err != nil {
+		if err = schema.Initialize(ctx, db); err != nil {
 			log.Fatal(err)
 		}
 	case "bootstrap":
@@ -69,14 +70,14 @@ func bootstrap(ctx context.Context, db *pgxpool.Pool, ifEmpty bool) error {
 		}
 		return fmt.Errorf("bootstrap is available only before the first user is created")
 	}
-	email := strings.ToLower(strings.TrimSpace(os.Getenv("BOOTSTRAP_EMAIL")))
+	username := access.NormalizeUsername(os.Getenv("BOOTSTRAP_USERNAME"))
 	password, err := os.ReadFile(os.Getenv("BOOTSTRAP_PASSWORD_FILE"))
 	if err != nil {
 		return err
 	}
 	plain := strings.TrimRight(string(password), "\r\n")
-	if !strings.Contains(email, "@") || len(plain) < 12 || len(plain) > 72 {
-		return fmt.Errorf("email and password (12–72 bytes) required")
+	if username == "" || strings.ContainsFunc(username, unicode.IsSpace) || len(plain) < 12 || len(plain) > 72 {
+		return fmt.Errorf("username without whitespace and password (12–72 bytes) required")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
 	if err != nil {
@@ -88,7 +89,7 @@ func bootstrap(ctx context.Context, db *pgxpool.Pool, ifEmpty bool) error {
 	}
 	var who access.Identity
 	var user string
-	if err = tx.QueryRow(ctx, "INSERT INTO users(email,password_hash) VALUES($1,$2) RETURNING id", email, hash).Scan(&user); err != nil {
+	if err = tx.QueryRow(ctx, "INSERT INTO users(username,password_hash) VALUES($1,$2) RETURNING id", username, hash).Scan(&user); err != nil {
 		return err
 	}
 	if err = tx.QueryRow(ctx, "INSERT INTO tenants(name) VALUES('Team') RETURNING id").Scan(&who.Tenant); err != nil {

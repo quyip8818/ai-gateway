@@ -4,9 +4,9 @@
 
 ## 本地启动
 
-安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。首次启动可复制 `.env.example` 为根目录 `.env`，按需修改本地端口和即梦地址，然后运行 `pnpm start`。启动命令会安装前端锁定依赖、构建控制台和 Go 服务、启动本机数据库并执行迁移。打开 `http://127.0.0.1:8088/app/`，使用 `admin@localhost` 和 `data/admin-password` 中的密码登录。管理员只在空库初始化，首次启动会输出网关 API Key，之后也可以在控制台签发 Key。按 `Ctrl+C` 停止网关和随本次启动的 PostgreSQL。
+安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。首次启动可复制 `.env.example` 为根目录 `.env`，按需修改本地端口和即梦地址，然后运行 `pnpm start`。启动命令会安装前端锁定依赖、构建控制台和 Go 服务、启动本机数据库并初始化表结构。打开 `http://127.0.0.1:8088/app/`，新建本地数据库时，使用用户名 `admin` 和 `data/admin-password` 中的密码登录。管理员只在空库初始化，首次启动会输出网关 API Key，之后也可以在控制台签发 Key。按 `Ctrl+C` 停止网关和随本次启动的 PostgreSQL。
 
-本地数据库使用 `data/` 下的私有 Unix socket，数据库、媒体文件和生成的密钥均保存在该目录。PostgreSQL 工具可以来自 `PATH`、Homebrew 的 `postgresql@16` 或 `POSTGRES_BIN` 指定的 `bin` 目录。启动命令读取根目录的 `.env`，进程环境变量优先。可用 `HTTP_ADDR` 和 `PUBLIC_BASE_URL` 修改监听和访问地址。若配置了 `DATABASE_URL`，启动命令连接现有 PostgreSQL 并执行迁移，此时需要提供固定的 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET`，也可以通过对应的 `_FILE` 变量指定密钥文件。在外部空库初始化管理员时，同时设置 `BOOTSTRAP_EMAIL` 和 `BOOTSTRAP_PASSWORD_FILE`。
+本地数据库使用 `data/` 下的私有 Unix socket，数据库、媒体文件和生成的密钥均保存在该目录。PostgreSQL 工具可以来自 `PATH`、Homebrew 的 `postgresql@16` 或 `POSTGRES_BIN` 指定的 `bin` 目录。启动命令读取根目录的 `.env`，进程环境变量优先。可用 `HTTP_ADDR` 和 `PUBLIC_BASE_URL` 修改监听和访问地址。若配置了 `DATABASE_URL`，启动命令连接指定的 PostgreSQL 并初始化表结构，此时需要提供固定的 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET`，也可以通过对应的 `_FILE` 变量指定密钥文件。在外部空库初始化管理员时，同时设置 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD_FILE`。
 
 ## 代码检查与格式化
 
@@ -44,15 +44,15 @@
 - 每小时执行一次清理。终态任务素材、成品和幂等键保留 30 天，审计保留 90 天。清理上游用量关联之外的旧诊断记录，保留未决任务和账本引用。无引用的本地文件至少经过 24 小时宽限期才回收。
 - 项目管理员可在后台为指标发布版本化内部积分价格，并对已确认的编程用量执行计费试算。每次尝试和指标只能入账一次，按调用发生前已生效的费率计算。支付、充值、退款和自动扣款需要独立的运营方案及授权。
 
-## 数据库升级
+## 数据库初始化
 
-执行 `gatewayctl migrate up`。已应用的 SQL 文件保持原样。升级会为旧迁移历史补录校验值，之后检测到已安装 SQL 被改写时停止。
+`gatewayctl init-db` 从单份 SQL 初始化空库，启动时可重复执行。开发库结构不匹配时，停止网关后移走 `data/postgres`，再运行 `pnpm start` 建立新库。使用外部 PostgreSQL 时，指向新建的专用数据库。
 
 ## 验证
 
 - 后端编译和静态检查：`cd backend && go test ./... && go vet ./...`。
 - PostgreSQL 集成测试：将 `TEST_DATABASE_URL` 指向专用测试数据库，在 `backend/` 执行 `go test ./tests/integration -count=1 -v`。仅在有该环境变量时启用。CI 启动 PostgreSQL 16 并执行。
-- 集成测试用模拟上游覆盖原生 SSE、流中断、备用连接、图片和视频交付、受理确认丢失、租约恢复、幂等冲突、跨项目隔离、游标验签、邀请、撤销、保留清理、路由重发、接入验证、报告积分、混合运行和幂等计费。
+- 集成测试用模拟上游覆盖原生 SSE、流中断、备用连接、图片和视频交付、受理确认丢失、租约恢复、幂等冲突、跨项目隔离、游标验签、撤销、保留清理、路由重发、接入验证、报告积分、混合运行和幂等计费。
 - 控制台构建：`cd frontend && npm ci && npm run build`。
 - 真实 Codex、Claude Code 和即梦验收需要获授权的上游连接、对应模型与客户端。试算账本使用内部积分。
 

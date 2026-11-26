@@ -55,7 +55,7 @@ ai-gateway/
 ├── backend/
 │   ├── go.mod
 │   ├── cmd/gateway/main.go          # 启动 HTTP 服务、工作器与优雅退出
-│   ├── cmd/gatewayctl/main.go       # 数据库迁移和首个管理员初始化
+│   ├── cmd/gatewayctl/main.go       # 表结构和首个管理员初始化
 │   ├── internal/
 │   │   ├── app/                     # app.go、routes.go、ui/embed.go
 │   │   ├── access/                  # auth.go、postgres.go
@@ -69,7 +69,7 @@ ai-gateway/
 │   │   ├── metering/                # usage.go、postgres.go
 │   │   ├── console/http.go
 │   │   └── platform/                # PostgreSQL 连接、加密、文件存储
-│   ├── migrations/                 # 版本化 PostgreSQL SQL
+│   ├── internal/schema/            # PostgreSQL 初始化 SQL
 │   └── tests/                       # integration/、fixtures/
 ├── frontend/
 │   ├── package.json
@@ -279,8 +279,8 @@ erDiagram
 | 表 | 关键字段 | 约束 |
 | --- | --- | --- |
 | `tenants`、`projects` | `id`、`name`、`status`，项目额外有 `tenant_id` | 一个租户有多个项目。停用项目时阻止新调用。 |
-| `users`、`project_principals` | 用户含 `id`、`email_norm`、`password_hash`、`disabled_at`。主体含 `id`、`tenant_id`、`project_id`、`kind`、`user_id`、`role`、`disabled_at` | 人员主体通过唯一的规范化邮箱登录，并在每个项目有一个主体。服务主体按项目创建。项目角色和服务主体身份独立于 Key。 |
-| `web_sessions`、`project_invitations` | 会话含 `user_id`、`token_digest`、`expires_at`、`revoked_at`。邀请含项目、受邀邮箱、角色、令牌摘要、有效期及使用时间 | P1 采用邀请加入项目。邀请单次使用，确认身份后同一事务创建成员关系并消费邀请。会话只认证用户，授权按当前项目关系读取。 |
+| `users`、`project_principals` | 用户含 `id`、`username`、`password_hash`、`disabled_at`。主体含 `id`、`tenant_id`、`project_id`、`kind`、`user_id`、`role`、`disabled_at` | 人员主体通过唯一的规范化用户名登录，并在每个项目有一个主体。服务主体按项目创建。项目角色和服务主体身份独立于 Key。 |
+| `web_sessions` | 会话含 `digest`、`user_id`、`expires_at` | 会话认证用户，授权按当前项目关系读取。 |
 | `api_keys` | `id`、`principal_id`、`key_prefix`、`key_digest`、`digest_key_id`、`scopes`、`expires_at`、`revoked_at` | Key 通过摘要和状态校验，项目和主体由外键约束。轮换 Key 继续使用原主体 ID，P1 默认在同一事务中签发新 Key 并撤销旧 Key。 |
 | `connections` | `id`、`provider`、`label`、`quota_scope`、`status`、`region` | 首发连接归项目所有。相同上游额度域共用限流计数。 |
 | `connection_secrets` | `connection_id`、`version`、`key_id`、`ciphertext`、`created_at` | 每个连接的凭证版本唯一。只有适配器在出站时取得所需凭证。 |
@@ -304,19 +304,11 @@ erDiagram
 - `media_jobs` 设部分唯一索引 `(tenant_id, project_id, principal_id, operation, idempotency_key)`，只覆盖提供了幂等键的请求。创建逻辑请求和媒体任务使用同一事务，幂等冲突返回原任务并比较 `input_hash`。 [PostgreSQL 部分索引](https://www.postgresql.org/docs/current/indexes-partial.html)
 - 媒体任务按可处理状态和 `run_after` 建领取索引，按 `lease_until` 建活跃租约恢复索引。提交、查询、复核和成品交付都用 `run_after` 表示下次可领取时间。`requests` 按 `(tenant_id, project_id, created_at, id)` 建控制台分页索引。任务状态、用量和日志过滤的附加索引按实际查询验证。
 
-### 迁移与事务实现
+### 表结构初始化与事务实现
 
 业务 ID 使用 UUID，时间用 `timestamptz`，持续时间用毫秒，文件大小用 `bigint`。`jsonb` 用于模型能力和任务参数等可版本化结构。归属、状态、关联、领取时间和用量单位使用类型化列。用 `CHECK` 限定状态和值域。编程请求终态使用 `succeeded`、`failed`、`client_canceled` 或 `interrupted`，媒体请求状态从 `media_jobs` 读取。尝试的受理状态用 `unknown`、`not_accepted` 和 `accepted`，与结果字段分别更新。`media_jobs.progress` 可空，取 0–100，只有成功状态为 100。
 
-| 迁移文件 | 内容和依赖 |
-| --- | --- |
-| `00001_identity.sql` | 租户、项目、用户、主体与 Key。建复合项目键与唯一身份约束。 |
-| `00002_catalog.sql` | 连接、凭证版本、路由版本和目标。对生效路由建部分唯一索引。 |
-| `00003_execution.sql` | 请求、尝试、素材、任务、素材引用和成品。建立任务外键、幂等、领取、恢复、分页约束。 |
-| `00004_observability.sql` | 用量与审计。创建上游请求追踪索引，验证真实查询后补充额外索引。 |
-| `00005_console_auth.sql` | P1 增加浏览器会话与项目邀请。 |
-
-迁移通过 `gatewayctl migrate up` 在部署时执行。每次验证由空库和上一个发布版本正常升级。新字段先可兼容读写，再回填和加约束。结构变更遵循可回退发布所需的兼容窗口。测试环境可重建数据库，生产破坏性变更通过独立迁移评审和恢复计划上线。
+本地启动与部署通过 `gatewayctl init-db` 从 `backend/internal/schema/schema.sql` 事务性初始化空库。开发库结构不匹配时重新建库。
 
 下列 SQL 明确幂等索引和租约写回条件。提交事务在冲突时回滚整笔创建，随后读取并校验原任务。领取方在锁定的同一事务内递增 `lease_version`，持有者只能在租约仍有效且版本匹配时更新，影响零行代表已失去租约。
 
@@ -380,11 +372,11 @@ WHERE tenant_id = $1 AND project_id = $2 AND id = $3 AND lease_version = $4
 
 | 页面 / 前端目录 | API 与交付 |
 | --- | --- |
-| 登录和项目切换 `src/app` | `POST /console/v1/session`、`GET /console/v1/session`、`DELETE /console/v1/session`，`GET /console/v1/projects`。初始管理员由部署命令创建，后续按邀请加入。 |
+| 登录和项目切换 `src/app` | `POST /console/v1/session`、`GET /console/v1/session`、`DELETE /console/v1/session`，`GET /console/v1/projects`。初始管理员由部署命令创建。 |
 | 接入与密钥 `features/setup` | `GET /models`，`GET/POST /keys`，`POST /keys/{id}/rotate`、`POST /keys/{id}/revoke`。`POST /setup/checks` 签发与项目、Key、协议和模型绑定的短时签名 ID，`GET /setup/checks/{id}` 返回 `waiting`、`succeeded` 或 `failed` 及可见请求 ID，过期返回 `410`。结果按服务端开始时间筛选，出现符合条件的成功生成即标记成功，失败详情取最近一次符合条件的失败。 |
 | 媒体 `features/media` | `POST /media/assets`、`GET/POST /media/jobs`，`GET /media/jobs/{id}`、`POST /media/jobs/{id}/cancel`、`GET /media/jobs/{id}/artifacts/{artifact_id}`。使用相同媒体服务和返回结构。上传与提交分别显示状态。 |
 | 请求及用量 `features/requests`、`features/usage` | `GET /requests`、`GET /requests/{id}`、`GET /usage` 和 `GET /usage/export`。请求详情带授权后的尝试摘要、关联任务和用量来源。CSV 导出与页面使用同一套过滤及权限。 |
-| 项目管理 `features/admin` | `GET/PATCH /members/{id}`、`GET /members`、`GET/POST /invitations`、`POST /console/v1/invitations/accept`。`GET/POST /connections`、`PATCH /connections/{id}`、`POST /connections/{id}/probe`。`GET /routes`、`POST /routes/validate`、`POST /routes/publish` 和 `GET /audit-events`。重发历史版本走发布接口并产生新版本。 |
+| 项目管理 `features/admin` | `GET /members`、`PATCH /members/{id}`。`GET/POST /connections`、`PATCH /connections/{id}`、`POST /connections/{id}/probe`。`GET /routes`、`POST /routes/validate`、`POST /routes/publish` 和 `GET /audit-events`。重发历史版本走发布接口并产生新版本。 |
 
 首发 UI 按正常、无数据、权限撤销、上游暂时不可用和未确认提交这几类情况验收。媒体下载和密钥响应使用防缓存策略。项目成员范围或 Key 状态变化后刷新服务端授权与相关数据，清理旧项目缓存。接入校验凭证只用于轮询结果，不承载业务调用权限。
 
@@ -405,7 +397,7 @@ WHERE tenant_id = $1 AND project_id = $2 AND id = $3 AND lease_version = $4
 | 数据库资源 | 编程和媒体使用独立的池或保留连接预算。上限由环境配置，测试媒体积压时的连接等待、流失败率和读写耗时。 |
 
 1. 检查环境变量、密钥及挂载卷，构建 React 静态产物后构建 Go 二进制。应用镜像包含网关和 `gatewayctl`。
-2. 启动 PostgreSQL，运行 `gatewayctl migrate up`，P0 用受控初始化命令创建测试租户、项目和第一组 Key。P1 通过初始化命令添加首个管理员，登录后经邀请补充成员。凭证通过秘密文件或受控输入提供。
+2. 启动 PostgreSQL，运行 `gatewayctl init-db`，P0 用受控初始化命令创建测试租户、项目和第一组 Key。P1 通过初始化命令添加首个管理员。凭证通过秘密文件或受控输入提供。
 3. 启动应用和 Caddy，确认就绪探针、媒体存储权限和测试上游连接后开放流量。访问 SPA 深链接、CLI 接口和成品下载验证实际路由。
 4. 发布前备份数据库、媒体和密钥。需要同一恢复点时暂停新提交、排空或记录未完成操作后再做备份。旧镜像回退前确认 SQL 结构仍兼容。媒体重启后按数据库状态续跑。
 
@@ -423,11 +415,11 @@ WHERE tenant_id = $1 AND project_id = $2 AND id = $3 AND lease_version = $4
 
 | 开发包 | 实现位置 | 完成标准 |
 | --- | --- | --- |
-| 1. 仓库与环境 | `backend/cmd`、`backend/migrations`、`deploy`、`frontend` 脚手架 | 依赖锁定，能从空库迁移。CI 构建前后端并跑一次 Compose 健康检查。 |
-| 2. 项目权限与模型目录 | `access`、`catalog`、迁移 1–2 | 租户、项目、主体、Key、连接与路由可初始化和查询。跨项目、Key 撤销、路由版本切换有集成测试。 |
-| 3. 两个原生流式入口 | `coding`、OpenAI 与 Anthropic 适配器、`metering` | 依赖开发包 2 和迁移 3–4。模拟上游回放和真实 CLI 工具闭环通过。 |
-| 4. 即梦图片和视频任务 | `media`、即梦适配器、迁移 3–4 | 可与流式入口并行开发。持久化任务和三类故障注入通过，使用获授权的即梦连接完成实际图片与视频交付。 |
-| 5. React 产品与管理 | `frontend`、`console`、迁移 5 | 在 API 契约确认后分页面开发。浏览器测试覆盖登录、Key、配置、生成、回查、权限和下载。 |
+| 1. 仓库与环境 | `backend/cmd`、`backend/internal/schema`、`deploy`、`frontend` 脚手架 | 依赖锁定，能初始化空库。CI 构建前后端并跑一次 Compose 健康检查。 |
+| 2. 项目权限与模型目录 | `access`、`catalog`、身份与目录表 | 租户、项目、主体、Key、连接与路由可初始化和查询。跨项目、Key 撤销、路由版本切换有集成测试。 |
+| 3. 两个原生流式入口 | `coding`、OpenAI 与 Anthropic 适配器、`metering` | 依赖开发包 2 和请求、用量表。模拟上游回放和真实 CLI 工具闭环通过。 |
+| 4. 即梦图片和视频任务 | `media`、即梦适配器、请求与任务表 | 可与流式入口并行开发。持久化任务和三类故障注入通过，使用获授权的即梦连接完成实际图片与视频交付。 |
+| 5. React 产品与管理 | `frontend`、`console`、会话表 | 在 API 契约确认后分页面开发。浏览器测试覆盖登录、Key、配置、生成、回查、权限和下载。 |
 | 6. 上线与迁移 | `deploy`、集成测试、发布记录 | 先完成授权、备份恢复、容量基线与灰度切换演练，再按项目放量。 |
 
 CI 分为 Go 单测、PostgreSQL 集成和浏览器端到端。外部上游用脱敏夹具或可控制的模拟器，覆盖半截 SSE、上游受理后断连、工作器重启、同键异参和成品回执延迟。真实凭证的回归由独立验收环境运行。发布记录保存客户端版本、模型、关键用例结果、上游接入授权和恢复演练结果。

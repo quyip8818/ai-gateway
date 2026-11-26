@@ -50,7 +50,6 @@ func (a App) Handler() http.Handler {
 		mux.HandleFunc(method+" /console/v1/session", a.Console.Session)
 	}
 	mux.HandleFunc("GET /console/v1/projects", a.Console.Projects)
-	mux.HandleFunc("POST /console/v1/invitations/accept", a.Console.AcceptInvitation)
 	const p = "/console/v1/projects/{project}"
 	auth := func(method, path string, fn bound) {
 		mux.HandleFunc(method+" "+p+path, func(w http.ResponseWriter, r *http.Request) {
@@ -83,8 +82,6 @@ func (a App) Handler() http.Handler {
 	auth("GET", "/usage/export", a.Console.ExportUsage)
 	auth("GET", "/members", a.Console.Members)
 	auth("PATCH", "/members/{id}", a.Console.Members)
-	auth("GET", "/invitations", a.Console.Invitations)
-	auth("POST", "/invitations", a.Console.Invitations)
 	auth("GET", "/audit-events", a.Console.Audit)
 	auth("GET", "/billing", a.Console.Billing)
 	auth("GET", "/billing/prices", a.Console.BillingPrice)

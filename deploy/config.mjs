@@ -30,7 +30,7 @@ export function deploymentConfig(values) {
     POSTGRES_PASSWORD: dbPassword = "",
     KEY_DIGEST_SECRET: key = "",
     CONNECTION_SECRET: encryption = "",
-    BOOTSTRAP_EMAIL: email = "",
+    BOOTSTRAP_USERNAME: configuredUsername = "",
     BOOTSTRAP_PASSWORD: password = "",
     JIMENG_NETWORK: network = "",
     JIMENG_BASE_URL: jimeng = "",
@@ -58,15 +58,17 @@ export function deploymentConfig(values) {
       );
     }
   }
+  const username = configuredUsername.trim();
   if (
     password &&
-    (!/^[^\s@]+@[^\s@]+$/.test(email) ||
+    (!username ||
+      /[\s\0]/.test(username) ||
       /[\r\n\0]/.test(password) ||
       Buffer.byteLength(password) < 12 ||
       Buffer.byteLength(password) > 72)
   ) {
     throw new Error(
-      "请填写有效的 BOOTSTRAP_EMAIL 和 12 至 72 字节的单行 BOOTSTRAP_PASSWORD",
+      "请填写不含空白的 BOOTSTRAP_USERNAME 和 12 至 72 字节的单行 BOOTSTRAP_PASSWORD",
     );
   }
   if (network && (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(network) || !jimeng)) {
@@ -86,7 +88,7 @@ export function deploymentConfig(values) {
     ),
     SITE_ADDRESS: ":80",
     DEPLOY_PORT: deployPort,
-    BOOTSTRAP_EMAIL: email,
+    BOOTSTRAP_USERNAME: username,
     JIMENG_BASE_URL: jimeng && serviceURL(jimeng, "JIMENG_BASE_URL"),
     JIMENG_DOWNLOAD_HOSTS: downloadHosts
       .split(",")

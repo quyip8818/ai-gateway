@@ -72,10 +72,11 @@ try {
   env.PUBLIC_BASE_URL ||= `http://${env.HTTP_ADDR.replace(/^(?:0\.0\.0\.0|\[::\])?:/, "127.0.0.1:")}`;
   env.MEDIA_STORAGE_DIR ||= join(data, "media");
   env.JIMENG_BASE_URL ||= "http://127.0.0.1:8000";
+  env.BOOTSTRAP_USERNAME = env.BOOTSTRAP_USERNAME?.trim();
   mkdirSync(data, { recursive: true, mode: 0o700 });
   if (local) {
     database = await startDatabase(env, start, run);
-    env.BOOTSTRAP_EMAIL ||= "admin@localhost";
+    env.BOOTSTRAP_USERNAME ||= "admin";
     env.BOOTSTRAP_PASSWORD_FILE ||= localSecret("admin-password", () =>
       randomBytes(24).toString("base64url"),
     ).path;
@@ -91,9 +92,11 @@ try {
       randomBytes(32).toString("base64"),
     ).value;
   }
-  if (Boolean(env.BOOTSTRAP_EMAIL) !== Boolean(env.BOOTSTRAP_PASSWORD_FILE)) {
+  if (
+    Boolean(env.BOOTSTRAP_USERNAME) !== Boolean(env.BOOTSTRAP_PASSWORD_FILE)
+  ) {
     throw new Error(
-      "Set both BOOTSTRAP_EMAIL and BOOTSTRAP_PASSWORD_FILE to initialize an administrator",
+      "Set both BOOTSTRAP_USERNAME and BOOTSTRAP_PASSWORD_FILE to initialize an administrator",
     );
   }
 
@@ -112,11 +115,11 @@ try {
     { cwd: backend },
   );
   const ctl = join(binaries, "gatewayctl");
-  await run(ctl, ["migrate", "up"]);
-  if (env.BOOTSTRAP_EMAIL) {
+  await run(ctl, ["init-db"]);
+  if (env.BOOTSTRAP_USERNAME) {
     await run(ctl, ["bootstrap", "--if-empty"]);
     console.log(
-      `管理员 ${env.BOOTSTRAP_EMAIL}。首次初始化使用的密码文件为 ${env.BOOTSTRAP_PASSWORD_FILE}`,
+      `空库初始化用户名为 ${env.BOOTSTRAP_USERNAME}，密码文件为 ${env.BOOTSTRAP_PASSWORD_FILE}`,
     );
   }
   const gateway = start(join(binaries, "gateway"), []);

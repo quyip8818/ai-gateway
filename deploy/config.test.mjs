@@ -23,7 +23,7 @@ test("administrator password and SSH target stay out of the Compose environment"
   const password = "test#password $value";
   const { runtime, password: bootstrap } = deploymentConfig({
     ...values,
-    BOOTSTRAP_EMAIL: "admin@example.test",
+    BOOTSTRAP_USERNAME: "admin",
     BOOTSTRAP_PASSWORD: password,
     JIMENG_NETWORK: "jimeng-public",
     JIMENG_BASE_URL: "http://jimeng-api:8000/",
@@ -31,6 +31,7 @@ test("administrator password and SSH target stay out of the Compose environment"
   const env = composeEnv(runtime);
   assert.equal(bootstrap, password);
   assert.equal(runtime.JIMENG_BASE_URL, "http://jimeng-api:8000");
+  assert.match(env, /^BOOTSTRAP_USERNAME='admin'$/m);
   assert.match(env, /^JIMENG_NETWORK='jimeng-public'$/m);
   assert.doesNotMatch(env, /BOOTSTRAP_PASSWORD|DEPLOY_HOST|test#password/);
 });
@@ -39,7 +40,7 @@ test("initial bootstrap credentials and shared network must be complete", () => 
   assert.throws(
     () =>
       deploymentConfig({ ...values, BOOTSTRAP_PASSWORD: "a-short-password" }),
-    /BOOTSTRAP_EMAIL/,
+    /BOOTSTRAP_USERNAME/,
   );
   assert.throws(
     () => deploymentConfig({ ...values, JIMENG_NETWORK: "jimeng-public" }),

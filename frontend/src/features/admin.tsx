@@ -79,23 +79,7 @@ export function Admin({ project }: { project: Project }) {
     routes = useResource<{ data: Row[] }>(base + "/routes");
   const members = useResource<{ data: Row[] }>(base + "/members"),
     audit = useResource<{ data: Row[] }>(base + "/audit-events");
-  const [err, setErr] = useState(""),
-    [invitation, setInvitation] = useState("");
-  async function invite(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    try {
-      const result = await api<{ token: string }>(
-        base + "/invitations",
-        Object.fromEntries(new FormData(form)),
-      );
-      setInvitation(result.token);
-      form.reset();
-      setErr("");
-    } catch (x) {
-      setErr((x as Error).message);
-    }
-  }
+  const [err, setErr] = useState("");
   async function probeConnection(id: string) {
     try {
       await api(base + "/connections/" + id + "/probe", undefined, "POST");
@@ -284,23 +268,10 @@ export function Admin({ project }: { project: Project }) {
           </ul>
         </Panel>
         <Panel title="项目成员">
-          <form onSubmit={invite}>
-            <Field name="email" label="受邀邮箱" type="email" />
-            <button>创建邀请</button>
-          </form>
-          {invitation && (
-            <div className="warning">
-              <p>将此一次性令牌交给受邀成员。</p>
-              <pre>{invitation}</pre>
-              <button className="secondary" onClick={() => setInvitation("")}>
-                关闭
-              </button>
-            </div>
-          )}
           <ul className="rows">
             {members.value?.data.map((x) => (
               <li key={text(x.id)}>
-                {text(x.email)}
+                {text(x.username)}
                 <span>
                   {text(x.role)} · {x.enabled ? "启用" : "停用"}
                 </span>

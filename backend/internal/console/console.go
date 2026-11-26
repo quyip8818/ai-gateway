@@ -51,13 +51,14 @@ func (s Service) Session(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	switch r.Method {
 	case "POST":
-		var in struct{ Email, Password string }
+		var in struct{ Username, Password string }
 		if !Decode(w, r, &in) {
 			return
 		}
 		var user string
 		var hash []byte
-		err := s.DB.QueryRow(r.Context(), "SELECT id,password_hash FROM users WHERE email=$1 AND enabled", strings.ToLower(strings.TrimSpace(in.Email))).Scan(&user, &hash)
+		username := access.NormalizeUsername(in.Username)
+		err := s.DB.QueryRow(r.Context(), "SELECT id,password_hash FROM users WHERE username=$1 AND enabled", username).Scan(&user, &hash)
 		if err != nil || bcrypt.CompareHashAndPassword(hash, []byte(in.Password)) != nil {
 			platform.Error(w, 401, "invalid_login")
 			return

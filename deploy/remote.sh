@@ -11,7 +11,7 @@ flock -n 9 || { echo '已有网关部署正在执行' >&2; exit 1; }
 
 # Use the selected release file as the only source of Compose interpolation.
 unset GATEWAY_IMAGE POSTGRES_PASSWORD PUBLIC_BASE_URL KEY_DIGEST_SECRET CONNECTION_SECRET \
-  BOOTSTRAP_EMAIL JIMENG_BASE_URL JIMENG_DOWNLOAD_HOSTS JIMENG_NETWORK \
+  BOOTSTRAP_USERNAME JIMENG_BASE_URL JIMENG_DOWNLOAD_HOSTS JIMENG_NETWORK \
   HTTP_PORT HTTPS_PORT SITE_ADDRESS DEPLOY_PORT
 
 compose() {
@@ -32,7 +32,7 @@ if [[ -L "$state/current" ]]; then
   [[ -f "$previous/.env" ]] || { echo '现有版本缺少运行配置' >&2; exit 1; }
 fi
 if [[ -z "$previous" && ! -s "$work/.bootstrap-password" ]]; then
-  echo '首次部署需要 BOOTSTRAP_EMAIL 和 BOOTSTRAP_PASSWORD' >&2
+  echo '首次部署需要 BOOTSTRAP_USERNAME 和 BOOTSTRAP_PASSWORD' >&2
   exit 1
 fi
 
@@ -84,7 +84,7 @@ if [[ ! -f "$state/.persistent-keys" ]]; then
   mv -- "$keys" "$state/.persistent-keys"
 fi
 compose "$release" up -d --wait --wait-timeout 90 db
-compose "$release" run --rm --no-deps -T app gatewayctl migrate up
+compose "$release" run --rm --no-deps -T app gatewayctl init-db
 if [[ -s "$work/.bootstrap-password" ]]; then
   compose "$release" run --rm --no-deps -T -i -e BOOTSTRAP_PASSWORD_FILE=/dev/stdin \
     app gatewayctl bootstrap --if-empty < "$work/.bootstrap-password"

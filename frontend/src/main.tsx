@@ -23,20 +23,16 @@ import "./styles.css";
 function Login({ onLogin }: { onLogin: () => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [invite, setInvite] = useState(false);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setBusy(true);
     setError("");
     try {
       await api(
-        consoleURL + (invite ? "/invitations/accept" : "/session"),
+        consoleURL + "/session",
         Object.fromEntries(new FormData(e.currentTarget)),
       );
-      if (invite) {
-        setInvite(false);
-        setError("邀请已接受，请用受邀邮箱登录");
-      } else onLogin();
+      onLogin();
     } catch (x) {
       setError((x as Error).message);
     } finally {
@@ -48,31 +44,13 @@ function Login({ onLogin }: { onLogin: () => void }) {
       <div className="brand">
         <span>↗</span> AI Gateway
       </div>
-      <Panel title={invite ? "接受项目邀请" : "登录工作台"}>
+      <Panel title="登录工作台">
         <form onSubmit={submit}>
-          {invite ? (
-            <Field name="token" label="邀请令牌" />
-          ) : (
-            <Field name="email" label="邮箱" type="email" />
-          )}
+          <Field name="username" label="用户名" />
           <Field name="password" label="密码" type="password" />
           <Notice error={error} />
-          <button disabled={busy}>
-            {busy ? "提交中…" : invite ? "接受邀请" : "登录"}
-          </button>
+          <button disabled={busy}>{busy ? "提交中…" : "登录"}</button>
         </form>
-        <p>
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setError("");
-              setInvite(!invite);
-            }}
-          >
-            {invite ? "返回登录" : "使用项目邀请"}
-          </button>
-        </p>
       </Panel>
     </main>
   );
