@@ -15,27 +15,24 @@ import {
   readEnv,
   root,
 } from "./environment.mjs";
+import { replaceLauncher } from "./launcher.mjs";
 import { startDatabase } from "./postgres.mjs";
 
 const backend = join(root, "backend");
 const frontend = join(root, "frontend");
 const children = new Set();
+const detached = process.platform !== "win32";
 let env;
 let database;
-let stopping = false;
+let releaseLauncher;
+let shutdown;
 
 function start(
   command,
   args,
-  {
-    cwd = root,
-    stdio = "inherit",
-    detached = false,
-    input,
-    childEnv = env,
-  } = {},
+  { cwd = root, stdio = "inherit", input, childEnv = env } = {},
 ) {
-  if (stopping) throw new Error("Startup interrupted");
+  if (shutdown) throw new Error("Startup interrupted");
   const child = spawn(command, args, {
     cwd,
     env: childEnv,
@@ -81,10 +78,22 @@ function localSecret(name, generate) {
 }
 
 function stopChildren() {
-  stopping = true;
-  const active = [...children].filter((child) => child !== database);
-  for (const { child } of active) child.kill("SIGTERM");
-  return Promise.all(active.map(({ done }) => done));
+  if (shutdown) return shutdown;
+  const active = [...children].filter((running) => running !== database);
+  for (const { child } of active) {
+    if (!detached) {
+      child.kill("SIGTERM");
+    } else if (child.pid) {
+      try {
+        // npm and Go can spawn workers that also need to stop before a restart.
+        process.kill(-child.pid, "SIGTERM");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+  }
+  shutdown = Promise.all(active.map(({ done }) => done));
+  return shutdown;
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
@@ -96,13 +105,19 @@ try {
     { required: true },
   );
   const local = !env.DATABASE_URL;
-  env.HTTP_ADDR ||= "127.0.0.1:8088";
+  env.HTTP_ADDR ||= "127.0.0.1:32270";
   env.PUBLIC_BASE_URL ||= `http://${env.HTTP_ADDR.replace(/^(?:0\.0\.0\.0|\[::\])?:/, "127.0.0.1:")}`;
   env.MEDIA_STORAGE_DIR ||= join(data, "media");
   env.JIMENG_BASE_URL ||= "http://127.0.0.1:8000";
   mkdirSync(data, { recursive: true, mode: 0o700 });
+  releaseLauncher = await replaceLauncher(
+    join(data, "launcher.sock"),
+    stopChildren,
+  );
   if (local) {
-    database = await startDatabase(env, start, run);
+    const postgres = await startDatabase(env, start, run);
+    database = postgres.server;
+    await postgres.ready;
   }
   for (const [name, file] of [
     ["KEY_DIGEST_SECRET", "key-digest"],
@@ -142,10 +157,10 @@ try {
       ? [database.done.then((result) => ({ name: "PostgreSQL", result }))]
       : []),
   ]);
-  if (!stopping)
+  if (!shutdown)
     throw new Error(`${ended.name} stopped (${ended.result || "exit 0"})`);
 } catch (error) {
-  if (!stopping) {
+  if (!shutdown) {
     console.error(error.message);
     process.exitCode = 1;
   }
@@ -156,4 +171,5 @@ try {
     database.child.kill("SIGINT");
     await database.done;
   }
+  await releaseLauncher?.();
 }

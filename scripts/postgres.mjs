@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { data, root } from "./environment.mjs";
@@ -43,23 +50,39 @@ export async function startDatabase(env, start, run) {
   const socket = join(data, "pg");
   mkdirSync(socket, { recursive: true, mode: 0o700 });
   if (!existsSync(join(cluster, "PG_VERSION"))) {
-    await run(pg("initdb"), [
-      "-D",
-      cluster,
-      "-U",
-      "gateway",
-      "--auth-local=trust",
-      "--auth-host=scram-sha-256",
-    ]);
+    // A replacement during initdb must never open a partially built cluster.
+    const staging = mkdtempSync(join(data, "postgres-init."));
+    try {
+      await run(pg("initdb"), [
+        "-D",
+        staging,
+        "-U",
+        "gateway",
+        "--auth-local=trust",
+        "--auth-host=scram-sha-256",
+      ]);
+      renameSync(staging, cluster);
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
+    }
   }
-  const server = start(
-    pg("postgres"),
-    ["-D", cluster, "-k", socket, "-p", "5432", "-c", "listen_addresses="],
-    {
-      // Ctrl+C belongs to the launcher. It stops PostgreSQL after the gateway drains.
-      detached: process.platform !== "win32",
-    },
-  );
+  const server = start(pg("postgres"), [
+    "-D",
+    cluster,
+    "-k",
+    socket,
+    "-p",
+    "5432",
+    "-c",
+    "listen_addresses=",
+  ]);
+  return {
+    server,
+    ready: waitForDatabase(env, start, server, pg, cluster, socket),
+  };
+}
+
+async function waitForDatabase(env, start, server, pg, cluster, socket) {
   for (let attempt = 0; attempt < 60 && server.result === null; attempt++) {
     if (postmasterPID(cluster) === server.child.pid) {
       const ready = start(
@@ -81,7 +104,7 @@ export async function startDatabase(env, start, run) {
       );
       if (!(await ready.done) && server.result === null) {
         env.DATABASE_URL = `postgresql://gateway@/postgres?host=${encodeURIComponent(socket)}&port=5432`;
-        return server;
+        return;
       }
     }
     await delay(250);
