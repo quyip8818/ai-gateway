@@ -1,14 +1,18 @@
 package console
 
 import (
-	"ai-gateway/internal/access"
-	"ai-gateway/internal/platform"
 	"encoding/json"
 	"errors"
-	"github.com/jackc/pgx/v5"
 	"net/http"
+	"regexp"
 	"time"
+
+	"ai-gateway/internal/access"
+	"ai-gateway/internal/platform"
+	"github.com/jackc/pgx/v5"
 )
+
+var modelID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,191}$`)
 
 func (s Service) StartSetup(w http.ResponseWriter, r *http.Request, who access.Identity) {
 	var input struct {
@@ -27,7 +31,9 @@ func (s Service) StartSetup(w http.ResponseWriter, r *http.Request, who access.I
 	err := s.DB.QueryRow(r.Context(), `INSERT INTO setup_checks(tenant_id,project_id,principal_id,key_id,operation,model)
  SELECT k.tenant_id,k.project_id,k.principal_id,k.id,$4,$5 FROM api_keys k
  WHERE k.id::text=$1 AND k.project_id=$2 AND k.principal_id=$3 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now())
- AND EXISTS(SELECT 1 FROM model_routes m JOIN connections c ON c.id=m.connection_id WHERE m.project_id=k.project_id AND m.operation=$4 AND m.model=$5 AND m.active AND c.enabled)
+ AND EXISTS(SELECT 1 FROM account_models m JOIN upstream_accounts a ON a.id=m.account_id WHERE m.project_id=k.project_id AND m.operation=$4 AND m.model=$5
+ AND a.enabled AND account_credential_ready(a)
+ AND may_use_pool(a.pool_id,k.id::text,k.principal_id,false))
  RETURNING id`, input.Key, who.Project, who.Principal, input.Operation, input.Model).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		platform.Error(w, 400, "invalid_setup_check")
@@ -59,18 +65,6 @@ func (s Service) Setup(w http.ResponseWriter, r *http.Request, who access.Identi
 		return
 	}
 	s.setupResult(w, r, who, key, model, operation, since)
-}
-
-// LegacySetup supports console pages loaded before durable setup checks were deployed.
-func (s Service) LegacySetup(w http.ResponseWriter, r *http.Request, who access.Identity) {
-	query := r.URL.Query()
-	since, err := time.Parse(time.RFC3339Nano, query.Get("since"))
-	operation := query.Get("operation")
-	if err != nil || since.Before(time.Now().Add(-time.Hour)) || (operation != "responses" && operation != "messages") {
-		platform.Error(w, 400, "invalid_setup_check")
-		return
-	}
-	s.setupResult(w, r, who, query.Get("key_id"), query.Get("model"), operation, since)
 }
 
 func (s Service) setupResult(w http.ResponseWriter, r *http.Request, who access.Identity, key, model, operation string, since time.Time) {

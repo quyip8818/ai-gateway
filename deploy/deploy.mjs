@@ -65,6 +65,7 @@ function deploy() {
         "deploy/compose.yaml",
         "deploy/compose.remote.yaml",
         "deploy/compose.jimeng.yaml",
+        "deploy/compose.accounts.yaml",
         "deploy/Caddyfile",
         "deploy/remote.sh",
         "-C",

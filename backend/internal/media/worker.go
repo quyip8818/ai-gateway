@@ -26,12 +26,12 @@ import (
 )
 
 type work struct {
-	ID, Request, Route, Op, State string
-	Who                           access.Identity
-	Version                       int64
-	Input                         Input
-	Attempt, Upstream             sql.NullString
-	Created                       time.Time
+	ID, Request, ModelID, State string
+	Who                         access.Identity
+	Version                     int64
+	Input                       Input
+	Attempt, Upstream           sql.NullString
+	Created                     time.Time
 }
 
 func (s *Service) Run(ctx context.Context) {
@@ -70,16 +70,21 @@ func (s *Service) claim(ctx context.Context, submit bool) (work, error) {
 		return w, err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `UPDATE media_jobs SET status='submit_unknown',error_code='submission_unconfirmed',lease_until=NULL,updated_at=now()
- WHERE status='submitting' AND lease_until<=now()`)
-	if err != nil {
-		return w, err
+	if submit {
+		if _, err = tx.Exec(ctx, `UPDATE media_jobs SET status='submit_unknown',error_code='submission_unconfirmed',lease_until=NULL,updated_at=now()
+ WHERE status='submitting' AND lease_until<=now()`); err != nil {
+			return w, err
+		}
 	}
 	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT j.id,j.request_id,r.route_id,j.tenant_id,j.project_id,j.principal_id,j.operation,j.status,j.input,j.attempt_id,j.upstream_job_id,j.lease_version,j.created_at
- FROM media_jobs j JOIN requests r ON r.id=j.request_id WHERE (($1 AND (j.status='queued' OR (j.status='submit_unknown' AND j.replay_allowed AND j.submission_replays=0 AND j.error_code='submission_unconfirmed' AND EXISTS(SELECT 1 FROM upstream_attempts ra JOIN connections rc ON rc.id=ra.connection_id JOIN project_principals rp ON rp.id=j.principal_id JOIN projects rj ON rj.id=j.project_id JOIN tenants rt ON rt.id=j.tenant_id LEFT JOIN users ru ON ru.id=rp.user_id WHERE ra.id=j.attempt_id AND rc.enabled AND rc.video_idempotency_verified AND rp.enabled AND rj.enabled AND rt.enabled AND (rp.user_id IS NULL OR ru.enabled))))) OR (NOT $1 AND j.status IN ('running','finalizing')))
+	err = tx.QueryRow(ctx, `SELECT j.id,j.request_id,r.account_model_id,j.tenant_id,j.project_id,j.principal_id,coalesce(r.key_id::text,''),
+ j.status,j.input,j.attempt_id,j.upstream_job_id,j.lease_version,j.created_at
+ FROM media_jobs j JOIN requests r ON r.id=j.request_id
+ WHERE (($1 AND j.status='queued') OR (NOT $1 AND j.status IN ('running','finalizing')))
  AND j.run_after<=now() AND (j.lease_until IS NULL OR j.lease_until<=now())
- ORDER BY j.run_after,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED`, submit).Scan(&w.ID, &w.Request, &w.Route, &w.Who.Tenant, &w.Who.Project, &w.Who.Principal, &w.Op, &w.State, &raw, &w.Attempt, &w.Upstream, &w.Version, &w.Created)
+ ORDER BY j.run_after,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED`, submit).
+		Scan(&w.ID, &w.Request, &w.ModelID, &w.Who.Tenant, &w.Who.Project, &w.Who.Principal, &w.Who.KeyID,
+			&w.State, &raw, &w.Attempt, &w.Upstream, &w.Version, &w.Created)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if err = tx.Commit(ctx); err != nil {
 			return w, err
@@ -89,19 +94,18 @@ func (s *Service) claim(ctx context.Context, submit bool) (work, error) {
 	if err != nil {
 		return w, err
 	}
-	if err = json.Unmarshal(raw, &w.Input); err != nil {
-		return w, err
-	}
 	w.Version++
 	next := w.State
-	allowReplay := false
-	replay := w.State == "submit_unknown"
 	if w.State == "queued" {
-		var connection string
-		err = tx.QueryRow(ctx, `SELECT mr.connection_id,c.video_idempotency_verified FROM model_routes mr JOIN connections c ON c.id=mr.connection_id JOIN projects p ON p.id=mr.project_id
-   JOIN project_principals a ON a.project_id=p.id AND a.id=$2 LEFT JOIN users u ON u.id=a.user_id JOIN tenants t ON t.id=p.tenant_id
-   WHERE mr.id=$1 AND c.enabled AND p.enabled AND t.enabled AND a.enabled AND (a.user_id IS NULL OR u.enabled)
-   AND EXISTS(SELECT 1 FROM model_routes x WHERE x.project_id=mr.project_id AND x.model=mr.model AND x.operation=mr.operation AND x.active)`, w.Route, w.Who.Principal).Scan(&connection, &allowReplay)
+		if err = json.Unmarshal(raw, &w.Input); err != nil {
+			return w, err
+		}
+		var account string
+		err = tx.QueryRow(ctx, `SELECT m.account_id FROM account_models m JOIN upstream_accounts a ON a.id=m.account_id
+ JOIN projects p ON p.id=m.project_id JOIN tenants t ON t.id=p.tenant_id
+ JOIN project_principals principal ON principal.project_id=p.id AND principal.id=$2 LEFT JOIN users u ON u.id=principal.user_id
+ WHERE m.id=$1 AND a.enabled AND account_credential_ready(a) AND p.enabled AND t.enabled
+ AND principal.enabled AND (principal.user_id IS NULL OR u.enabled)`, w.ModelID, w.Who.Principal).Scan(&account)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if _, err = tx.Exec(ctx, `UPDATE media_jobs SET status='failed',error_code='route_unavailable',input=NULL,updated_at=now() WHERE id=$1`, w.ID); err != nil {
 				return w, err
@@ -115,20 +119,16 @@ func (s *Service) claim(ctx context.Context, submit bool) (work, error) {
 			return w, err
 		}
 		var attempt string
-		err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,connection_id,attempt_no)
- VALUES($1,$2,$3,$4,1) RETURNING id`, w.Who.Tenant, w.Who.Project, w.Request, connection).Scan(&attempt)
+		err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,account_id,attempt_no)
+ VALUES($1,$2,$3,$4,1) RETURNING id`, w.Who.Tenant, w.Who.Project, w.Request, account).Scan(&attempt)
 		if err != nil {
 			return w, err
 		}
 		w.Attempt = sql.NullString{String: attempt, Valid: true}
 		next = "submitting"
 	}
-	if replay {
-		next = "submitting"
-		w.State = "queued"
-		allowReplay = true
-	}
-	_, err = tx.Exec(ctx, `UPDATE media_jobs SET status=$2,lease_version=$3,lease_until=now()+interval '45 seconds',attempt_id=$4,replay_allowed=$5,submission_replays=submission_replays+CASE WHEN $6 THEN 1 ELSE 0 END WHERE id=$1`, w.ID, next, w.Version, w.Attempt, allowReplay && w.Op == "video.generate", replay)
+	_, err = tx.Exec(ctx, `UPDATE media_jobs SET status=$2,lease_version=$3,lease_until=now()+interval '45 seconds',attempt_id=$4,input=NULL
+ WHERE id=$1`, w.ID, next, w.Version, w.Attempt)
 	if err != nil {
 		return w, err
 	}
@@ -168,7 +168,7 @@ func (s *Service) process(parent context.Context, w work) {
 			}
 		}
 	}()
-	route, err := s.Catalog.Get(ctx, w.Who.Project, "", "", w.Route, w.State != "queued")
+	route, err := s.Catalog.MediaTarget(ctx, w.Who.Project, w.ModelID, w.State != "queued")
 	if err != nil {
 		if w.State == "queued" {
 			s.transition(w, "failed", "route_unavailable", "", 0)
@@ -196,8 +196,8 @@ func (s *Service) transition(w work, state, code, upstream string, delay time.Du
 	}
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `UPDATE media_jobs SET status=$3,error_code=nullif($4,''),upstream_job_id=coalesce(nullif($5,''),upstream_job_id),
- run_after=now()+($6::int*interval '1 second'),lease_until=NULL,updated_at=now(),
- input=CASE WHEN $3='failed' THEN NULL ELSE input END WHERE id=$1 AND lease_version=$2 AND lease_until>now()`, w.ID, w.Version, state, code, upstream, int(delay.Seconds()))
+ run_after=now()+($6::int*interval '1 second'),lease_until=NULL,updated_at=now()
+ WHERE id=$1 AND lease_version=$2 AND lease_until>now()`, w.ID, w.Version, state, code, upstream, int(delay.Seconds()))
 	if err != nil || tag.RowsAffected() == 0 {
 		return
 	}
@@ -216,7 +216,7 @@ func (s *Service) transition(w work, state, code, upstream string, delay time.Du
 	}
 }
 
-func (s *Service) request(ctx context.Context, route catalog.Route, method, path string, payload any, idempotencyKey string) (*http.Response, error) {
+func (s *Service) request(ctx context.Context, route catalog.Target, method, path string, payload any, idempotencyKey string) (*http.Response, error) {
 	var body io.Reader
 	if payload != nil {
 		raw, err := json.Marshal(payload)
@@ -233,7 +233,7 @@ func (s *Service) request(ctx context.Context, route catalog.Route, method, path
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Authorization", "Bearer "+route.Token)
+	route.Protocol.Authorize(req.Header, route.Token, nil)
 	if idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", idempotencyKey)
 	}
@@ -244,7 +244,7 @@ func (s *Service) request(ctx context.Context, route catalog.Route, method, path
 	return client.Do(req)
 }
 
-func (s *Service) submit(ctx context.Context, w work, r catalog.Route) {
+func (s *Service) submit(ctx context.Context, w work, r catalog.Target) {
 	input := w.Input
 	caps, err := loadCapabilities(r.Capabilities)
 	if err != nil || !caps.allows(input) {
@@ -323,7 +323,7 @@ func validVideo(id string) bool {
 	}) < 0
 }
 
-func (s *Service) poll(ctx context.Context, w work, r catalog.Route) {
+func (s *Service) poll(ctx context.Context, w work, r catalog.Target) {
 	if !w.Upstream.Valid || !validVideo(w.Upstream.String) {
 		s.transition(w, "submit_unknown", "invalid_upstream_id", "", 0)
 		return
@@ -359,7 +359,7 @@ func (s *Service) poll(ctx context.Context, w work, r catalog.Route) {
 	}
 }
 
-func (s *Service) download(ctx context.Context, w work, r catalog.Route) {
+func (s *Service) download(ctx context.Context, w work, r catalog.Target) {
 	if !validVideo(w.Upstream.String) {
 		s.transition(w, "failed", "invalid_upstream_id", "", 0)
 		return
@@ -422,7 +422,7 @@ func (s *Service) finish(w work, body io.Reader, mime string, max int64, credits
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE media_jobs SET status='succeeded',progress=100,error_code=NULL,input=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_version=$2 AND lease_until>now()`, w.ID, w.Version)
+	tag, err := tx.Exec(ctx, `UPDATE media_jobs SET status='succeeded',progress=100,error_code=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_version=$2 AND lease_until>now()`, w.ID, w.Version)
 	if err != nil {
 		return err
 	}

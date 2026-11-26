@@ -10,7 +10,6 @@ import (
 	"unicode"
 
 	"ai-gateway/internal/access"
-	"ai-gateway/internal/platform"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -57,10 +56,6 @@ func bootstrap(ctx context.Context, db *pgxpool.Pool, username string, input io.
 	if err != nil {
 		return err
 	}
-	key, err := platform.Secret("KEY_DIGEST_SECRET")
-	if err != nil {
-		return err
-	}
 	var who access.Identity
 	var user string
 	if err = tx.QueryRow(ctx, "INSERT INTO users(username,password_hash) VALUES($1,$2) RETURNING id", username, hash).Scan(&user); err != nil {
@@ -75,13 +70,9 @@ func bootstrap(ctx context.Context, db *pgxpool.Pool, username string, input io.
 	if err = tx.QueryRow(ctx, "INSERT INTO project_principals(tenant_id,project_id,user_id,role) VALUES($1,$2,$3,'admin') RETURNING id", who.Tenant, who.Project, user).Scan(&who.Principal); err != nil {
 		return err
 	}
-	_, raw, err := (access.Store{Key: key}).Issue(ctx, tx, who, "Bootstrap")
-	if err != nil {
-		return err
-	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
-	fmt.Printf("Project: %s\nGateway Key: %s\n", who.Project, raw)
+	fmt.Printf("Project: %s\n", who.Project)
 	return nil
 }

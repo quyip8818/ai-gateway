@@ -12,18 +12,18 @@ import (
 
 type Store struct{ DB *pgxpool.Pool }
 
-func (s Store) Start(ctx context.Context, who access.Identity, requestID, routeID, connection, op, model string) (string, error) {
+func (s Store) Start(ctx context.Context, who access.Identity, requestID, modelID, accountID, op, model string) (string, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `INSERT INTO requests(id,tenant_id,project_id,principal_id,key_id,route_id,operation,model,status)
- VALUES($1,$2,$3,$4,nullif($5,'')::uuid,$6,$7,$8,'running')`, requestID, who.Tenant, who.Project, who.Principal, who.KeyID, routeID, op, model); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO requests(id,tenant_id,project_id,principal_id,key_id,account_model_id,operation,model,status)
+ VALUES($1,$2,$3,$4,nullif($5,'')::uuid,$6,$7,$8,'running')`, requestID, who.Tenant, who.Project, who.Principal, who.KeyID, modelID, op, model); err != nil {
 		return "", err
 	}
 	var attempt string
-	err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,connection_id,attempt_no) VALUES($1,$2,$3,$4,1) RETURNING id`, who.Tenant, who.Project, requestID, connection).Scan(&attempt)
+	err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,account_id,attempt_no) VALUES($1,$2,$3,$4,1) RETURNING id`, who.Tenant, who.Project, requestID, accountID).Scan(&attempt)
 	if err != nil {
 		return "", err
 	}
@@ -55,7 +55,7 @@ func (s Store) Finish(request, attempt, status, stage, code, upstream string, ht
 }
 
 // Retry records the first attempt as not dispatched before a safe second attempt.
-func (s Store) Retry(ctx context.Context, request, previous, connection string) (string, error) {
+func (s Store) Retry(ctx context.Context, request, previous, accountID string) (string, error) {
 	tx, err := s.DB.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -65,8 +65,8 @@ func (s Store) Retry(ctx context.Context, request, previous, connection string) 
 		return "", err
 	}
 	var next string
-	err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,connection_id,attempt_no)
- SELECT tenant_id,project_id,id,$2,2 FROM requests WHERE id=$1 RETURNING id`, request, connection).Scan(&next)
+	err = tx.QueryRow(ctx, `INSERT INTO upstream_attempts(tenant_id,project_id,request_id,account_id,attempt_no)
+ SELECT tenant_id,project_id,id,$2,2 FROM requests WHERE id=$1 RETURNING id`, request, accountID).Scan(&next)
 	if err != nil {
 		return "", err
 	}

@@ -17,6 +17,7 @@ import (
 	"ai-gateway/internal/access"
 	"ai-gateway/internal/catalog"
 	"ai-gateway/internal/platform"
+	"ai-gateway/internal/protocol"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,18 +66,12 @@ func invalidID(s string) bool {
 }
 
 func (s *Service) Models(w http.ResponseWriter, r *http.Request, who access.Identity) {
-	models, err := s.Catalog.Models(r.Context(), who.Project, "")
+	models, err := s.Catalog.Models(r.Context(), who, protocol.Media)
 	if err != nil {
 		platform.Error(w, 503, "models_unavailable")
 		return
 	}
-	list := []catalog.Model{}
-	for _, m := range models {
-		if m.Operation == "image.generate" || m.Operation == "video.generate" {
-			list = append(list, m)
-		}
-	}
-	platform.JSON(w, 200, map[string]any{"data": list})
+	platform.JSON(w, 200, map[string]any{"data": models})
 }
 
 func (s *Service) Create(w http.ResponseWriter, r *http.Request, who access.Identity) {
@@ -106,10 +101,14 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request, who access.Iden
 		platform.Error(w, 503, "project_unavailable")
 		return
 	}
+	callerID := who.KeyID
+	if callerID == "" {
+		callerID = who.Principal
+	}
 	if idem != "" {
 		var id string
 		var saved []byte
-		err = tx.QueryRow(ctx, `SELECT id,input_hash FROM media_jobs WHERE project_id=$1 AND principal_id=$2 AND operation=$3 AND idempotency_key=$4`, who.Project, who.Principal, input.Operation, idem).Scan(&id, &saved)
+		err = tx.QueryRow(ctx, `SELECT id,input_hash FROM media_jobs WHERE project_id=$1 AND caller_id=$2 AND operation=$3 AND idempotency_key=$4`, who.Project, callerID, input.Operation, idem).Scan(&id, &saved)
 		if err == nil {
 			if !bytes.Equal(saved, hash[:]) {
 				platform.Error(w, 409, "idempotency_conflict")
@@ -125,20 +124,18 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request, who access.Iden
 			return
 		}
 	}
-	var route string
-	var caps json.RawMessage
-	err = tx.QueryRow(ctx, `SELECT r.id,r.capabilities FROM model_routes r JOIN connections c ON c.id=r.connection_id
- WHERE r.project_id=$1 AND r.operation=$2 AND r.model=$3 AND r.active AND c.enabled AND c.provider='jimeng'`, who.Project, input.Operation, input.Model).Scan(&route, &caps)
-	if errors.Is(err, pgx.ErrNoRows) {
+	modelID, err := s.Catalog.PickMedia(ctx, tx, who, input.Operation, input.Model, func(capabilities json.RawMessage) bool {
+		return allowed(input, capabilities)
+	})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		platform.Error(w, 404, "model_not_found")
 		return
-	}
-	if err != nil {
-		platform.Error(w, 503, "database_unavailable")
-		return
-	}
-	if !allowed(input, caps) {
+	case errors.Is(err, catalog.ErrUnsupportedMediaSpec):
 		platform.Error(w, 400, "unsupported_media_spec")
+		return
+	case err != nil:
+		platform.Error(w, 503, "database_unavailable")
 		return
 	}
 	var count int
@@ -151,11 +148,11 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request, who access.Iden
 		return
 	}
 	id, requestID := platform.ID(), w.Header().Get("X-Request-Id")
-	_, err = tx.Exec(ctx, `INSERT INTO requests(id,tenant_id,project_id,principal_id,key_id,route_id,operation,model,status)
- VALUES($1,$2,$3,$4,nullif($5,'')::uuid,$6,$7,$8,'media')`, requestID, who.Tenant, who.Project, who.Principal, who.KeyID, route, input.Operation, input.Model)
+	_, err = tx.Exec(ctx, `INSERT INTO requests(id,tenant_id,project_id,principal_id,key_id,account_model_id,operation,model,status)
+ VALUES($1,$2,$3,$4,nullif($5,'')::uuid,$6,$7,$8,'media')`, requestID, who.Tenant, who.Project, who.Principal, who.KeyID, modelID, input.Operation, input.Model)
 	if err == nil {
-		_, err = tx.Exec(ctx, `INSERT INTO media_jobs(id,request_id,tenant_id,project_id,principal_id,operation,idempotency_key,input_hash,input,status)
- VALUES($1,$2,$3,$4,$5,$6,nullif($7,''),$8,$9,'queued')`, id, requestID, who.Tenant, who.Project, who.Principal, input.Operation, idem, hash[:], normalized)
+		_, err = tx.Exec(ctx, `INSERT INTO media_jobs(id,request_id,tenant_id,project_id,principal_id,operation,idempotency_key,input_hash,input,caller_id,status)
+ VALUES($1,$2,$3,$4,$5,$6,nullif($7,''),$8,$9,$10,'queued')`, id, requestID, who.Tenant, who.Project, who.Principal, input.Operation, idem, hash[:], normalized, callerID)
 	}
 	if err != nil {
 		platform.Error(w, 503, "could_not_create_job")
@@ -167,8 +164,9 @@ func (s *Service) Create(w http.ResponseWriter, r *http.Request, who access.Iden
 			return
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO media_job_assets(tenant_id,project_id,job_id,asset_id,role,position)
-   SELECT tenant_id,project_id,$1,id,$2,$3 FROM assets WHERE project_id=$4 AND id=$5 AND principal_id=$6 AND mime LIKE 'image/%'`,
-			id, asset.Role, pos, who.Project, asset.ID, who.Principal)
+   SELECT tenant_id,project_id,$1,id,$2,$3 FROM assets WHERE project_id=$4 AND id=$5 AND principal_id=$6
+   AND key_id IS NOT DISTINCT FROM nullif($7,'')::uuid AND mime LIKE 'image/%'`,
+			id, asset.Role, pos, who.Project, asset.ID, who.Principal, who.KeyID)
 		if err != nil {
 			platform.Error(w, 503, "asset_lookup_failed")
 			return
@@ -194,23 +192,21 @@ func jobLocation(r *http.Request, id string) string {
 }
 
 type jobView struct {
-	RecoveryPending bool              `json:"recovery_pending"`
-	ID              string            `json:"id"`
-	Request         string            `json:"request_id"`
-	Model           string            `json:"model"`
-	Operation       string            `json:"operation"`
-	Status          string            `json:"status"`
-	Created         time.Time         `json:"created_at"`
-	Updated         time.Time         `json:"updated_at"`
-	Credits         *string           `json:"credits_used"`
-	Progress        *int              `json:"progress,omitempty"`
-	Artifacts       []string          `json:"artifacts"`
-	Error           map[string]string `json:"error,omitempty"`
+	ID        string            `json:"id"`
+	Request   string            `json:"request_id"`
+	Model     string            `json:"model"`
+	Operation string            `json:"operation"`
+	Status    string            `json:"status"`
+	Created   time.Time         `json:"created_at"`
+	Updated   time.Time         `json:"updated_at"`
+	Credits   *string           `json:"credits_used"`
+	Progress  *int              `json:"progress,omitempty"`
+	Artifacts []string          `json:"artifacts"`
+	Error     map[string]string `json:"error,omitempty"`
 }
 
 const selection = `j.id,j.request_id,r.model,j.operation,j.status,j.created_at,j.updated_at,j.progress,j.error_code,
  (SELECT u.quantity::text FROM usage_records u WHERE u.attempt_id=j.attempt_id AND u.metric='credits_used' AND u.unit='credit' AND u.source='reported'),
- coalesce(j.status='submit_unknown' AND j.replay_allowed AND j.submission_replays=0 AND j.error_code='submission_unconfirmed',false),
  ARRAY(SELECT asset_id::text FROM artifacts WHERE job_id=j.id ORDER BY position)`
 
 type scanner interface{ Scan(...any) error }
@@ -218,7 +214,7 @@ type scanner interface{ Scan(...any) error }
 func scanJob(row scanner) (jobView, error) {
 	var v jobView
 	var code sql.NullString
-	err := row.Scan(&v.ID, &v.Request, &v.Model, &v.Operation, &v.Status, &v.Created, &v.Updated, &v.Progress, &code, &v.Credits, &v.RecoveryPending, &v.Artifacts)
+	err := row.Scan(&v.ID, &v.Request, &v.Model, &v.Operation, &v.Status, &v.Created, &v.Updated, &v.Progress, &code, &v.Credits, &v.Artifacts)
 	if code.Valid {
 		v.Error = map[string]string{"code": code.String}
 	}
@@ -232,7 +228,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request, who access.Identit
 		platform.Error(w, 404, "job_not_found")
 		return
 	}
-	v, err := scanJob(s.DB.QueryRow(r.Context(), `SELECT `+selection+` FROM media_jobs j JOIN requests r ON r.id=j.request_id WHERE j.id=$1 AND j.project_id=$2 AND (j.principal_id=$3 OR $4)`, id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == ""))
+	v, err := scanJob(s.DB.QueryRow(r.Context(), `SELECT `+selection+` FROM media_jobs j JOIN requests r ON r.id=j.request_id WHERE j.id=$1 AND j.project_id=$2 AND (j.principal_id=$3 OR $4) AND ($5='' OR j.caller_id::text=$5)`, id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", who.KeyID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		platform.Error(w, 404, "job_not_found")
 		return
@@ -245,7 +241,7 @@ func (s *Service) get(w http.ResponseWriter, r *http.Request, who access.Identit
 }
 func (s *Service) List(w http.ResponseWriter, r *http.Request, who access.Identity) {
 	q := r.URL.Query()
-	scope := who.Project + ":" + who.Principal + ":media:" + q.Get("status") + ":" + q.Get("operation")
+	scope := who.Project + ":" + who.Principal + ":" + who.KeyID + ":media:" + q.Get("status") + ":" + q.Get("operation")
 	limit, after, err := platform.Pagination(q, s.CursorKey, scope)
 	if err != nil {
 		platform.Error(w, 400, "invalid_pagination")
@@ -253,8 +249,8 @@ func (s *Service) List(w http.ResponseWriter, r *http.Request, who access.Identi
 	}
 	rows, err := s.DB.Query(r.Context(), `SELECT `+selection+` FROM media_jobs j JOIN requests r ON r.id=j.request_id
  WHERE j.project_id=$1 AND (j.principal_id=$2 OR $3) AND ($4='' OR j.status=$4) AND ($5='' OR j.operation=$5)
- AND ($6='' OR (j.created_at,j.id)<($7,NULLIF($6,'')::uuid))
- ORDER BY j.created_at DESC,j.id DESC LIMIT $8`, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", q.Get("status"), q.Get("operation"), after.ID, after.Created, limit+1)
+ AND ($6='' OR (j.created_at,j.id)<($7,NULLIF($6,'')::uuid)) AND ($9='' OR j.caller_id::text=$9)
+ ORDER BY j.created_at DESC,j.id DESC LIMIT $8`, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", q.Get("status"), q.Get("operation"), after.ID, after.Created, limit+1, who.KeyID)
 	if err != nil {
 		platform.Error(w, 503, "jobs_unavailable")
 		return
@@ -287,15 +283,18 @@ func (s *Service) Cancel(w http.ResponseWriter, r *http.Request, who access.Iden
 		platform.Error(w, 404, "job_not_found")
 		return
 	}
-	tag, err := s.DB.Exec(r.Context(), `UPDATE media_jobs SET status='canceled',input=NULL,updated_at=now() WHERE id=$1 AND project_id=$2
- AND (principal_id=$3 OR $4) AND status IN ('queued','canceled')`, id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "")
+	tag, err := s.DB.Exec(r.Context(), `WITH stopped AS (
+ UPDATE media_jobs SET status='canceled',input=NULL,updated_at=now() WHERE id=$1 AND project_id=$2
+ AND (principal_id=$3 OR $4) AND ($5='' OR caller_id::text=$5) AND status IN ('queued','canceled') RETURNING request_id
+ ) UPDATE requests r SET status='canceled',finished_at=coalesce(r.finished_at,now()) FROM stopped s WHERE r.id=s.request_id`,
+		id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", who.KeyID)
 	if err != nil {
 		platform.Error(w, 503, "cancel_unavailable")
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		var one int
-		err = s.DB.QueryRow(r.Context(), `SELECT 1 FROM media_jobs WHERE id=$1 AND project_id=$2 AND (principal_id=$3 OR $4)`, id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "").Scan(&one)
+		err = s.DB.QueryRow(r.Context(), `SELECT 1 FROM media_jobs WHERE id=$1 AND project_id=$2 AND (principal_id=$3 OR $4) AND ($5='' OR caller_id::text=$5)`, id, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", who.KeyID).Scan(&one)
 		if errors.Is(err, pgx.ErrNoRows) {
 			platform.Error(w, 404, "job_not_found")
 			return
@@ -377,8 +376,8 @@ func (s *Service) save(ctx context.Context, db executor, who access.Identity, da
 	if err = os.Rename(f.Name(), path); err != nil {
 		return "", err
 	}
-	_, err = db.Exec(ctx, `INSERT INTO assets(id,tenant_id,project_id,principal_id,object_key,mime,bytes) VALUES($1,$2,$3,$4,$1::uuid::text,$5,$6)`,
-		id, who.Tenant, who.Project, who.Principal, mime, n)
+	_, err = db.Exec(ctx, `INSERT INTO assets(id,tenant_id,project_id,principal_id,key_id,object_key,mime,bytes)
+ VALUES($1,$2,$3,$4,nullif($5,'')::uuid,$1::uuid::text,$6,$7)`, id, who.Tenant, who.Project, who.Principal, who.KeyID, mime, n)
 	if err != nil {
 		return "", err
 	}
@@ -393,8 +392,8 @@ func (s *Service) Artifact(w http.ResponseWriter, r *http.Request, who access.Id
 	}
 	var key, mime string
 	err := s.DB.QueryRow(r.Context(), `SELECT a.object_key,a.mime FROM artifacts f JOIN assets a ON a.id=f.asset_id JOIN media_jobs j ON j.id=f.job_id
- WHERE j.id=$1 AND a.id=$2 AND j.project_id=$3 AND (j.principal_id=$4 OR $5) AND j.status='succeeded'`,
-		id, artifact, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "").Scan(&key, &mime)
+ WHERE j.id=$1 AND a.id=$2 AND j.project_id=$3 AND (j.principal_id=$4 OR $5) AND ($6='' OR j.caller_id::text=$6) AND j.status='succeeded'`,
+		id, artifact, who.Project, who.Principal, who.Role == "admin" && who.KeyID == "", who.KeyID).Scan(&key, &mime)
 	if errors.Is(err, pgx.ErrNoRows) {
 		platform.Error(w, 404, "artifact_not_found")
 		return

@@ -1,296 +1,409 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { api, projectURL, text, useResource } from "../api";
-import type { Project, Row } from "../api";
-import { Field, Notice, Panel } from "../components";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, date, projectURL, useResource, workspaceURL } from "../api";
+import type { Collection, Pool, Project } from "../api";
+import {
+  Dialog,
+  Empty,
+  Loading,
+  Notice,
+  Page,
+  Panel,
+  Status,
+} from "../components";
 
-function BillingPanel({ project }: { project: Project }) {
-  const base = projectURL(project.id) + "/billing";
-  const entries = useResource<{ data: Row[] }>(base);
+type Provider = {
+  id: string;
+  name: string;
+  format: string;
+  credential_label: string;
+  configured: boolean;
+  authorize: boolean;
+};
+type Account = {
+  id: string;
+  label: string;
+  provider: string;
+  enabled: boolean;
+  expires_at?: string;
+  refresh_state?: string;
+  verified_at?: string;
+  last_used_at?: string;
+  models: number;
+};
+type Authorization = { status: string };
+const authorizationDone = (value: Authorization) =>
+  !["waiting", "verifying"].includes(value.status);
+
+export function Admin({ project }: { project: Project }) {
+  const base = projectURL(project.id);
+  const root = workspaceURL(project);
+  const providers = useResource<Collection<Provider>>(base + "/providers");
+  const accounts = useResource<Collection<Account>>(base + "/accounts");
+  const pools = useResource<Collection<Pool>>(base + "/pools");
+  const [filter, setFilter] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [createdPool, setCreatedPool] = useState("");
+  const [pending, setPending] = useState("");
   const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  async function publish(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    const form = e.currentTarget;
+  const [params, setParams] = useSearchParams();
+  const authorization = params.get("authorization");
+  const result = useResource<Authorization>(
+    authorization
+      ? base + "/account-authorizations/" + encodeURIComponent(authorization)
+      : null,
+    2000,
+    authorizationDone,
+  );
+  const visible = accounts.value?.data.filter(
+    (account) => !filter || filter === account.provider,
+  );
+  const providerName = (id: string) =>
+    providers.value?.data.find((item) => item.id === id)?.name ?? id;
+
+  function refresh() {
+    accounts.refresh();
+    pools.refresh();
+  }
+
+  async function toggle(account: Account) {
+    setPending(account.id);
+    setError("");
     try {
-      await api(base + "/prices", Object.fromEntries(new FormData(form)));
-      form.reset();
-      setNotice("价格已发布，将用于后续请求");
-      setError("");
-    } catch (e) {
-      setError((e as Error).message);
+      await api(
+        base + "/accounts/" + account.id,
+        { enabled: !account.enabled },
+        "PATCH",
+      );
+      refresh();
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setPending("");
     }
   }
-  async function reconcile() {
-    try {
-      const data = await api<{ booked: number }>(base + "/reconcile", {});
-      setNotice("新增 " + data.booked + " 条试算记录");
-      setError("");
-      entries.refresh();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
+
   return (
-    <Panel title="计费试算">
-      <Notice error={error || entries.error} />
-      {notice && <p role="status">{notice}</p>}
-      <form onSubmit={publish}>
-        <label>
-          协议
-          <select name="operation">
-            <option value="responses">OpenAI Responses</option>
-            <option value="messages">Anthropic Messages</option>
+    <Page
+      title="上游账号"
+      description="导入上游授权，验证后账号会自动加入对应的池。"
+      actions={<button onClick={() => setAdding(true)}>添加账号</button>}
+    >
+      <Notice error={error} />
+      {createdPool && (
+        <div className="success" role="status">
+          <span>账号验证通过，已加入账号池。</span>
+          <Link
+            className="button"
+            to={root + "/keys?pool=" + encodeURIComponent(createdPool)}
+          >
+            签发调用密钥
+          </Link>
+        </div>
+      )}
+      {authorization && (
+        <div className="callout">
+          <Notice error={result.error} retry={result.refresh} />
+          {!result.error && (
+            <span role="status">
+              {result.value?.status === "succeeded"
+                ? "授权完成，账号已入池。"
+                : result.value && authorizationDone(result.value)
+                  ? "授权未完成，请重新发起。"
+                  : "正在验证授权…"}
+            </span>
+          )}
+          {result.value?.status === "succeeded" && (
+            <Link to={root + "/keys"}>签发调用密钥</Link>
+          )}
+          <button
+            className="secondary"
+            onClick={() => {
+              setParams({}, { replace: true });
+              refresh();
+            }}
+          >
+            关闭提示
+          </button>
+        </div>
+      )}
+      <Panel
+        title="账号列表"
+        actions={
+          <select
+            aria-label="按供应商筛选"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          >
+            <option value="">全部供应商</option>
+            {providers.value?.data.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.name}
+              </option>
+            ))}
           </select>
-        </label>
-        <Field label="模型 ID" name="model" />
-        <label>
-          计量
-          <select name="metric">
-            <option>input_tokens</option>
-            <option>output_tokens</option>
-            <option>cache_creation_input_tokens</option>
-            <option>cache_read_input_tokens</option>
-          </select>
-        </label>
-        <input name="unit" value="token" type="hidden" />
-        <Field label="每 Token 的内部积分" name="amount_per_unit" />
-        <button>发布价格</button>
-      </form>
-      <p>
-        <button className="secondary" onClick={reconcile}>
-          试算已完成请求
-        </button>
-      </p>
-      <ul className="rows">
-        {entries.value?.data.map((x) => (
-          <li key={text(x.id)}>
-            {text(x.model)} · {text(x.metric)}
-            <span>{text(x.amount)} 积分</span>
-          </li>
-        ))}
-      </ul>
-    </Panel>
+        }
+      >
+        <Notice error={accounts.error} retry={accounts.refresh} />
+        <Notice error={providers.error} retry={providers.refresh} />
+        {!visible && !accounts.error && <Loading />}
+        {visible?.length === 0 && (
+          <Empty title={filter ? "此供应商暂无账号" : "还没有上游账号"}>
+            <button className="secondary" onClick={() => setAdding(true)}>
+              添加账号
+            </button>
+          </Empty>
+        )}
+        {!!visible?.length && (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>状态</th>
+                  <th>模型数</th>
+                  <th>最近验证</th>
+                  <th>最近使用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((account) => {
+                  const needsAuth =
+                    account.refresh_state === "reauthorize" ||
+                    (!!account.expires_at &&
+                      Date.parse(account.expires_at) <= Date.now());
+                  return (
+                    <tr key={account.id}>
+                      <td>
+                        <strong>{account.label}</strong>
+                        <small>{providerName(account.provider)}</small>
+                      </td>
+                      <td>
+                        <Status
+                          value={
+                            !account.enabled
+                              ? "paused"
+                              : needsAuth
+                                ? "reauthorize"
+                                : "active"
+                          }
+                        />
+                        {!account.enabled && needsAuth && (
+                          <small>需重新授权</small>
+                        )}
+                      </td>
+                      <td>{account.models}</td>
+                      <td>{date(account.verified_at)}</td>
+                      <td>{date(account.last_used_at)}</td>
+                      <td>
+                        <button
+                          className="secondary"
+                          disabled={!!pending}
+                          onClick={() => void toggle(account)}
+                        >
+                          {pending === account.id
+                            ? "更新中…"
+                            : account.enabled
+                              ? "暂停"
+                              : "启用"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      <Panel title="账号池">
+        <Notice error={pools.error} retry={pools.refresh} />
+        {!pools.value && !pools.error && <Loading />}
+        {pools.value && !pools.value.data.length && (
+          <Empty title="暂无账号池">第一个账号验证通过后会自动创建。</Empty>
+        )}
+        {!!pools.value?.data.length && (
+          <div className="pool-grid">
+            {pools.value.data.map((pool) => (
+              <div className="pool" key={pool.id}>
+                <strong>{providerName(pool.provider)}</strong>
+                <code>{pool.slug}</code>
+                <small>{pool.available} 个可用账号</small>
+                <Link to={root + "/keys?pool=" + encodeURIComponent(pool.id)}>
+                  签发密钥
+                </Link>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+      {adding && (
+        <Enroll
+          base={base}
+          providers={providers.value?.data}
+          error={providers.error}
+          retry={providers.refresh}
+          initial={filter}
+          close={() => setAdding(false)}
+          done={(pool) => {
+            setAdding(false);
+            setFilter("");
+            setCreatedPool(pool);
+            refresh();
+          }}
+        />
+      )}
+    </Page>
   );
 }
-export function Admin({ project }: { project: Project }) {
-  const base = projectURL(project.id),
-    connections = useResource<{ data: Row[] }>(base + "/connections"),
-    routes = useResource<{ data: Row[] }>(base + "/routes");
-  const members = useResource<{ data: Row[] }>(base + "/members"),
-    audit = useResource<{ data: Row[] }>(base + "/audit-events");
-  const [err, setErr] = useState("");
-  async function probeConnection(id: string) {
+
+function Enroll({
+  base,
+  providers,
+  error: loadError,
+  retry,
+  initial,
+  close,
+  done,
+}: {
+  base: string;
+  providers?: Provider[];
+  error?: string;
+  retry: () => void;
+  initial: string;
+  close: () => void;
+  done: (pool: string) => void;
+}) {
+  const [selected, select] = useState(initial);
+  const [method, setMethod] = useState("import");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const provider = providers?.find((item) => item.id === selected);
+  const oauth =
+    !!provider?.authorize && (method === "oauth" || !provider.configured);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy || !provider || (!oauth && !provider.configured)) return;
+    const form = new FormData(event.currentTarget);
+    setBusy(true);
+    setError("");
     try {
-      await api(base + "/connections/" + id + "/probe", undefined, "POST");
-      connections.refresh();
-    } catch (x) {
-      setErr((x as Error).message);
-    }
-  }
-  async function connectionState(id: string, enabled: boolean) {
-    try {
-      await api(base + "/connections/" + id, { enabled }, "PATCH");
-      connections.refresh();
-      audit.refresh();
-    } catch (x) {
-      setErr((x as Error).message);
-    }
-  }
-  const [validation, setValidation] = useState("");
-  async function restore(id: string) {
-    if (!confirm("将此历史版本发布为新的生效版本？")) return;
-    try {
-      await api(base + "/routes/" + id + "/restore", {});
-      routes.refresh();
-      audit.refresh();
-      setErr("");
-      setValidation("已重发历史路由");
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  }
-  async function submit(e: FormEvent<HTMLFormElement>, save: string) {
-    e.preventDefault();
-    const form = e.currentTarget;
-    const mode = (e.nativeEvent as SubmitEvent).submitter?.getAttribute(
-      "value",
-    );
-    const effectivePath =
-      save === "/routes/publish" && mode === "validate"
-        ? "/routes/validate"
-        : save;
-    const body: Row = Object.fromEntries(new FormData(form));
-    try {
-      if ("capabilities" in body)
-        body.capabilities = JSON.parse(text(body.capabilities) || "{}");
-      if (save === "/connections")
-        body.videoIdempotencyVerified = body.videoIdempotencyVerified === "on";
-      setValidation("");
-      await api(base + effectivePath, body);
-      if (effectivePath === "/routes/validate") {
-        setValidation("草稿校验通过");
-        setErr("");
-        return;
+      if (oauth) {
+        const response = await api<{ authorization_url: string }>(
+          base + "/account-authorizations",
+          { provider: provider.id },
+        );
+        window.location.assign(response.authorization_url);
+      } else {
+        const input = form.get("credential");
+        if (input instanceof File && input.size > 60 * 1024)
+          throw new Error("授权文件不能超过 60 KiB。");
+        const credential =
+          input instanceof File
+            ? await input.text()
+            : String(input ?? "").trim();
+        const response = await api<{ pool_id: string }>(
+          base + "/account-enrollments",
+          { provider: provider.id, credential },
+        );
+        done(response.pool_id);
       }
-      form.reset();
-      connections.refresh();
-      routes.refresh();
-      audit.refresh();
-      setErr("");
-    } catch (x) {
-      setErr((x as Error).message);
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
+
   return (
-    <>
-      <h1>项目管理</h1>
-      <Notice error={err || connections.error || routes.error} />
-      <div className="grid">
-        <Panel title="上游连接">
-          <form onSubmit={(e) => submit(e, "/connections")}>
-            <label>
-              供应商
-              <select name="provider">
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="jimeng">即梦</option>
-              </select>
-            </label>
-            <Field label="名称" name="label" />
-            <Field label="上游地址" name="base" type="url" />
-            <Field label="上游凭证" name="token" type="password" />
-            <Field label="共享额度域" name="quota" />
-            <Field label="上游数据区域" name="region" required={false} />
-            <label className="inline">
+    <Dialog title="添加上游账号" busy={busy} close={close}>
+      <Notice error={loadError} retry={retry} />
+      <form onSubmit={submit}>
+        <label>
+          供应商
+          <select
+            autoFocus
+            required
+            disabled={busy || !providers}
+            value={selected}
+            onChange={(e) => {
+              select(e.target.value);
+              setMethod("import");
+              setError("");
+            }}
+          >
+            <option value="">选择供应商</option>
+            {providers?.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+                {item.configured || item.authorize ? "" : " · 尚未配置"}
+              </option>
+            ))}
+          </select>
+        </label>
+        {provider?.authorize && provider.configured && (
+          <label>
+            授权方式
+            <select
+              value={method}
+              disabled={busy}
+              onChange={(e) => {
+                setMethod(e.target.value);
+                setError("");
+              }}
+            >
+              <option value="import">导入已有凭证</option>
+              <option value="oauth">浏览器授权</option>
+            </select>
+          </label>
+        )}
+        {provider?.configured && !oauth && (
+          <label key={provider.id}>
+            {provider.credential_label}
+            {provider.format === "auth.json" ? (
               <input
-                type="checkbox"
-                name="videoIdempotencyVerified"
-                style={{ width: "auto" }}
+                name="credential"
+                type="file"
+                accept=".json,application/json"
+                required
+                disabled={busy}
               />
-              已验证即梦视频幂等协议
-            </label>
-            <button>保存连接</button>
-          </form>
-          <ul className="rows">
-            {connections.value?.data.map((x) => (
-              <li key={text(x.id)}>
-                {text(x.label)}
-                <span>
-                  {text(x.provider)} · {text(x.probe_state)}{" "}
-                  <button
-                    className="secondary"
-                    onClick={() => probeConnection(text(x.id))}
-                  >
-                    探活
-                  </button>{" "}
-                  <button
-                    className="secondary"
-                    onClick={() => connectionState(text(x.id), !x.enabled)}
-                  >
-                    {x.enabled ? "停用" : "启用"}
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-        <Panel title="发布模型路由">
-          <form onSubmit={(e) => submit(e, "/routes/publish")}>
-            <label>
-              操作
-              <select name="operation">
-                {[
-                  "responses",
-                  "messages",
-                  "image.generate",
-                  "video.generate",
-                ].map((x) => (
-                  <option key={x}>{x}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              连接
-              <select name="connection" required>
-                <option value="">选择连接</option>
-                {connections.value?.data.map((x) => (
-                  <option value={text(x.id)} key={text(x.id)}>
-                    {text(x.label)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              备用连接
-              <select name="backup">
-                <option value="">无需备用</option>
-                {connections.value?.data.map((x) => (
-                  <option value={text(x.id)} key={text(x.id)}>
-                    {text(x.label)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Field name="model" label="对外模型 ID" />
-            <Field name="upstream" label="上游模型 ID" />
-            <label>
-              媒体能力（JSON）
-              <textarea name="capabilities" defaultValue="{}" rows={3} />
-            </label>
-            <div className="segments">
-              <button type="submit" value="validate" className="secondary">
-                校验草稿
-              </button>
-              <button type="submit" value="publish">
-                发布路由
-              </button>
-            </div>
-            {validation && <p role="status">{validation}</p>}
-          </form>
-          <ul className="rows">
-            {routes.value?.data.map((x) => (
-              <li key={text(x.id)}>
-                {text(x.model)}
-                <span>
-                  v{text(x.version)} · {x.active ? "生效" : "历史"}{" "}
-                  {!x.active && (
-                    <button
-                      className="secondary"
-                      onClick={() => restore(text(x.id))}
-                    >
-                      重发版本
-                    </button>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-        <Panel title="项目成员">
-          <ul className="rows">
-            {members.value?.data.map((x) => (
-              <li key={text(x.id)}>
-                {text(x.username)}
-                <span>
-                  {text(x.role)} · {x.enabled ? "启用" : "停用"}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-        <Panel title="最近审计">
-          <ul className="rows">
-            {audit.value?.data.map((x) => (
-              <li key={text(x.id)}>
-                {text(x.action)}
-                <small>{text(x.created_at)}</small>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-        <BillingPanel project={project} />
-      </div>
-    </>
+            ) : (
+              <input
+                name="credential"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                required
+                disabled={busy}
+              />
+            )}
+          </label>
+        )}
+        {provider && !provider.authorize && !provider.configured && (
+          <p className="muted">联系部署管理员配置此供应商的执行器。</p>
+        )}
+        {oauth && (
+          <p className="muted">完成供应商授权后，浏览器会返回此页面。</p>
+        )}
+        <Notice error={error} />
+        <div className="actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={close}
+          >
+            取消
+          </button>
+          <button disabled={busy || (!oauth && !provider?.configured)}>
+            {busy ? "正在验证…" : oauth ? "继续授权" : "验证并添加"}
+          </button>
+        </div>
+      </form>
+    </Dialog>
   );
 }

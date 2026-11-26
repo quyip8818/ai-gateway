@@ -11,7 +11,8 @@ flock -n 9 || { echo '已有网关部署正在执行' >&2; exit 1; }
 
 # Use the selected release file as the only source of Compose interpolation.
 unset GATEWAY_IMAGE POSTGRES_PASSWORD PUBLIC_BASE_URL KEY_DIGEST_SECRET CONNECTION_SECRET \
-  BOOTSTRAP_USERNAME JIMENG_BASE_URL JIMENG_DOWNLOAD_HOSTS JIMENG_NETWORK \
+  BOOTSTRAP_USERNAME JIMENG_ACCOUNT_BASE_URL CODEX_ACCOUNT_BASE_URL KIRO_ACCOUNT_BASE_URL \
+  CLAUDE_ACCOUNT_BASE_URL ACCOUNT_CONFIG_DIR JIMENG_DOWNLOAD_HOSTS JIMENG_NETWORK \
   HTTP_PORT HTTPS_PORT SITE_ADDRESS DEPLOY_PORT
 
 compose() {
@@ -21,6 +22,9 @@ compose() {
     -f "$dir/deploy/compose.yaml" -f "$dir/deploy/compose.remote.yaml")
   if grep -q '^JIMENG_NETWORK=' "$dir/.env"; then
     args+=(-f "$dir/deploy/compose.jimeng.yaml")
+  fi
+  if grep -q '^ACCOUNT_CONFIG_DIR=' "$dir/.env"; then
+    args+=(-f "$dir/deploy/compose.accounts.yaml")
   fi
   docker compose "${args[@]}" "$@"
 }

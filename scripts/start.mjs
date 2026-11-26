@@ -117,7 +117,6 @@ try {
   env.HTTP_ADDR ||= "127.0.0.1:32270";
   env.PUBLIC_BASE_URL ||= `http://${env.HTTP_ADDR.replace(/^(?:0\.0\.0\.0|\[::\])?:/, "127.0.0.1:")}`;
   env.MEDIA_STORAGE_DIR ||= join(data, "media");
-  env.JIMENG_BASE_URL ||= "http://127.0.0.1:8000";
   mkdirSync(data, { recursive: true, mode: 0o700 });
   releaseLauncher = await replaceLauncher(
     join(data, "launcher.sock"),

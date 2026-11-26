@@ -30,6 +30,7 @@ func (s *Service) Sweep(ctx context.Context, p Retention) error {
 	}{
 		{"DELETE FROM web_sessions WHERE expires_at<$1", p.SessionsBefore},
 		{"DELETE FROM setup_checks WHERE expires_at<$1::timestamptz - interval '1 day'", p.SessionsBefore},
+		{"DELETE FROM account_authorizations WHERE expires_at<$1::timestamptz - interval '1 day'", p.SessionsBefore},
 		{"DELETE FROM audit_events WHERE created_at<$1", p.AuditBefore},
 		{`UPDATE media_jobs SET idempotency_key=NULL WHERE updated_at<$1 AND status IN ('succeeded','failed','canceled') AND idempotency_key IS NOT NULL`, p.IdempotencyBefore},
 		{`DELETE FROM media_job_assets ma USING media_jobs j WHERE j.id=ma.job_id AND j.updated_at<$1 AND j.status IN ('succeeded','failed','canceled')`, p.AssetsBefore},

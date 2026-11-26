@@ -1,65 +1,65 @@
 # AI Gateway
 
-独立的 Go + PostgreSQL 网关和 React 控制台。OpenAI Responses 与 Anthropic Messages 原生入口走实时转发。即梦图片、视频走持久化任务 API。整体实现规格见 [实现文档](docs/implementation.md)。当前部署是单实例。
+账号池反代网关。管理员导入上游账号凭证，网关发现模型并建立账号池。调用方拿到网关地址、公开模型 ID 和本系统签发的 Key。编程请求保留原生 SSE，图片和视频通过持久化媒体任务交付。
 
-## 本地启动
+## 启动与使用
 
-安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。在 `deploy/.env` 中填写 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD`，然后运行 `pnpm start`。本地端口和即梦地址可在根目录 `.env` 配置。启动命令会安装前端锁定依赖、构建控制台和 Go 服务、启动本机数据库并初始化表结构。打开 `http://127.0.0.1:32270/app/`，使用 `deploy/.env` 中的用户名和密码登录。管理员只在空库创建。更改开发环境的管理员凭证后，运行 `pnpm reset` 重新初始化。首次创建管理员时会输出网关 API Key，之后也可以在控制台签发 Key。再次运行 `pnpm start` 会先关闭当前工作区的旧实例，再启动新实例。按 `Ctrl+C` 可手动停止。
+1. 安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。在 `deploy/.env` 填写初始管理员的 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD`。
+2. 运行 `pnpm start`，访问 `http://127.0.0.1:32270/app/`。启动器构建前后端、启动 PostgreSQL，并初始化空库和管理员。运行配置读取根目录 `.env`，进程环境变量优先。
+3. 打开「账号」，选择供应商并导入凭证。通过上游目录检查后，网关自动填充对应账号池和公开模型，无需手工发布路由。
+4. 打开「调用密钥」，勾选要授权的池并签发 Key。复制密钥原文后，在「使用」页按模型配置 Codex 或 Claude Code，或打开「媒体创作」生成图片和视频。Key 轮换保留授权范围和任务归属。
 
-本地数据库使用 `data/` 下的私有 Unix socket，数据库、媒体文件和生成的密钥均保存在该目录。PostgreSQL 工具可以来自 `PATH`、Homebrew 的 `postgresql@16` 或 `POSTGRES_BIN` 指定的 `bin` 目录。启动命令读取根目录的 `.env`，进程环境变量优先。可用 `HTTP_ADDR` 和 `PUBLIC_BASE_URL` 修改监听和访问地址。若配置了 `DATABASE_URL`，启动命令连接指定的 PostgreSQL 并初始化表结构，此时需要提供固定的 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET`，也可以通过对应的 `_FILE` 变量指定密钥文件。
+本地 PostgreSQL、媒体和生成的密钥位于 `data/`。用现有 PostgreSQL 时，提供空库的 `DATABASE_URL`，并为 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET` 提供固定值或相应的 `_FILE`。开发环境需要重新初始化时，`pnpm reset` 会清空当前工作区的本地数据库。外部数据库用 `gatewayctl init-db` 初始化空库。
 
-如果从支持自动重启之前的版本切换，先在原终端按 `Ctrl+C` 关闭旧实例。
+## 上游配置
 
-## 代码检查与格式化
+| 供应商 | 控制台输入 | 执行方式 |
+| --- | --- | --- |
+| 即梦 | 包含 `sessionid` 的账号 Cookie | 网关在专用 `jimeng-api` 实例验证 Cookie、添加账号并签发内部调用凭证。 |
+| Codex | Codex `auth.json` | CLI 账号文件导入专用 CLIProxyAPI v8；带 `OPENAI_API_KEY` 的文件可直连 OpenAI Platform。 |
+| Kiro | 含 `refreshToken` 的授权 JSON | 导入专用 kiro2api，执行器负责令牌续期。Builder ID 或 IAM Identity Center 导出还需匹配的客户端字段。公开入口使用 Anthropic Messages。 |
+| Claude | Anthropic Console 密钥 | 直连 Anthropic API，公开入口使用 Anthropic Messages。 |
 
-首次开发时运行 `npm --prefix frontend ci` 安装前端工具。已运行过 `pnpm start` 时可直接在根目录执行：
+部署方用 `ACCOUNT_EXECUTORS_FILE` 指向私有 JSON 配置。每个实例从空账号池启动，由网关独占，一个实例对应一个导入账号。执行器只在私有网络监听，管理凭证和内部调用凭证保存在部署配置中。
 
-- `pnpm lint` 检查 TypeScript 类型与未使用声明、启动脚本语法、前端格式及 `go vet`。
-- `pnpm format` 用 Prettier 格式化前端和启动脚本，并用 `gofmt` 格式化 Go 源码。
+```json
+[
+  {"provider":"jimeng","url":"http://jimeng-1:8000","username":"gateway","password":"replace-with-private-password"},
+  {"provider":"codex","url":"http://codex-1:8317","management_key":"replace-with-management-key","runtime_key":"replace-with-codex-runtime-key"},
+  {"provider":"kiro","url":"http://kiro-1:8080","management_key":"replace-with-management-key","runtime_key":"replace-with-kiro-runtime-key"}
+]
+```
 
-## SSH 部署
+- 即梦使用 [jimeng-free-api-all](https://github.com/zhizinan1997/jimeng-free-api-all) 的账号池、图片和异步视频 API。为成品重定向配置允许的 CDN 主机名 `JIMENG_DOWNLOAD_HOSTS`。视频始终回原执行器查询。
+- Codex 执行器启用 [CLIProxyAPI v8 管理 API](https://github.com/router-for-me/CLIProxyAPIDocs/blob/main/docs/en/management/apiv8.md)，使用独立、可写的凭证目录，并将 `runtime_key` 配到客户端 Key 列表。
+- Kiro 执行器用 [kiro2api](https://github.com/xwteam/kiro2api/blob/main/docs/en/API.md) 的管理接口导入和验证模型，分别配置其管理 Key 和调用 Key，并存储到独立的数据卷。
 
-复制 `deploy/.env.example` 为 `deploy/.env`，填好 SSH、公开地址、数据库密码、网关密钥和初始管理员信息，然后在根目录执行 `pnpm run deploy`。部署脚本在目标服务器用 Docker Compose 构建并启动 Go 网关、PostgreSQL 和 Caddy，检查 `/readyz` 后切换当前版本。即梦服务独立部署。若两个服务在同一台服务器上，可以让网关加入即梦的 Docker 网络。 [部署配置与验证步骤](deploy/README.md)
+部署方也可指定直接接受上游账号凭证的兼容执行器。变量为 `CODEX_ACCOUNT_BASE_URL`、`KIRO_ACCOUNT_BASE_URL`、`CLAUDE_ACCOUNT_BASE_URL`、`JIMENG_ACCOUNT_BASE_URL`。兼容执行器需要实现 `/v1/models` 和对应调用接口。已注册的 Codex 或 Kiro OAuth 客户端可通过 `ACCOUNT_OAUTH_CLIENTS_FILE` 配置浏览器授权和续期。以供应商 ID 为键填写 `token_url`、`client_id`，按需填写 `authorize_url`、`scope`、`resource`、`client_secret`，并注册网关的 `/console/v1/oauth/callback`。该流程需要可直接接受交换后令牌的兼容执行器。Claude 目前使用官方 Console 密钥。
 
-部署后在项目管理中添加上游连接与模型路由。OpenAI 使用 `https://api.openai.com`，Anthropic 使用 `https://api.anthropic.com`。可用模型 ID 以凭证授权为准。
+## 添加兼容供应商
 
-开发时可用 Node 24 执行 `make ui`，然后设置数据库、密钥和媒体目录等环境变量，在 `backend/` 运行 `go run ./cmd/gateway`。使用 Vite 独立开发服务器时，`PUBLIC_BASE_URL` 设为浏览器实际访问的开发地址。
+账号池按供应商和授权归属隔离，网关 Key 可授权多个池。公开模型 ID 带池前缀，即使两个供应商提供同名模型，也会路由到指定的池。供应商身份用于凭证导入与目录展示，运行时按协议执行。Codex 对接 Responses，Claude 和 Kiro 可共用 Messages；token 计数由供应商声明。即梦沿用媒体任务协议、租约和原账号恢复流程。
 
-## 即梦连接
+已有兼容端点可以配置到 `ACCOUNT_PROVIDERS_FILE`，Compose 下用挂载目录中的 `providers.json`。端点实现 `/v1/models` 和相应的调用 API。
 
-1. 在相邻的 `../jimeng-api` 目录按该项目配置启用获授权的账号池并启动服务。使用 `GET /ping` 检查服务是否在线，并从该服务管理台签发托管 `jm_` Key。其当前图片和异步视频 API 都使用托管 Key。
-2. `pnpm start` 默认将 `http://127.0.0.1:8000` 设为允许的即梦上游。上游使用其他地址时，将网关的 `JIMENG_BASE_URL` 改为网关进程可访问的服务根地址。用 Docker Compose 部署时填写容器可访问的上游地址。进入网关的「项目管理」，新建「即梦」连接，填写相同的服务地址和托管 Key。可用连接的「探活」检查模型目录接口是否可访问。
-3. 发布 `image.generate` 或 `video.generate` 路由并填写真实上游模型 ID。可用模型从该 `jimeng-api` 实例的 `/v1/models` 查询。发布后可在网关的「媒体任务」提交任务和查看成品。
+```json
+[
+  {"id":"team-models","label":"团队模型","base_url":"https://models.example.test","protocol":"messages","count_tokens":true}
+]
+```
 
-新发布的图片路由默认使用当前即梦协议，文生图发送 `size`，参考图走 `/v1/images/edits`。例如上游 `jimeng-image-5.0-pro` 可配置 `{"aspect_ratios":["1:1"],"image_sizes":{"1:1":"1536x1536"},"input_roles":["reference_image"]}`。已有路由及恢复的历史版本继续沿用原协议。需要切换的旧图片路由，发布一个新的版本即可。兼容较旧的即梦服务时可显式设置 `"image_api":"legacy"`。
+`protocol` 接受 `responses`、`messages` 或 `openai_media`。媒体端点须使用当前图片和视频任务契约，并通过 `media_models` 将模型 ID 映射到 `image.generate` 或 `video.generate`。仅在验证端点支持 `/v1/messages/count_tokens` 后为 Messages 配置 `count_tokens`。重启后控制台会显示该供应商和 API Key 输入，并为其账号创建独立的池。新授权或执行协议需要代码适配器。
 
-视频路由例如 `jimeng-video-seedance-2.0` 可填写 `{"aspect_ratios":["16:9"],"video_sizes":{"16:9":"1280x720"},"duration_seconds":[5],"input_roles":["first_frame"]}`。规格和账号权益以实际部署为准。`jimeng-api` 的视频成品接口返回 CDN 重定向，需要把部署方允许的 CDN 主机名写入逗号分隔的 `JIMENG_DOWNLOAD_HOSTS`。网关拒绝未列出的重定向并在任务中显示 `download_host_not_allowed`，服务日志会显示被拒绝的主机名。修改配置并重启后，仍在交付中的任务会继续尝试下载。
+## 版本切换
 
-客户端遇到提交超时应沿用原幂等键。受理未知时默认保留待核验。只有在连接登记时明确启用并已验证视频幂等协议，网关才会在原连接上用同一上游幂等键重放一次。图片提交的受理未知状态保留给人工核验。图片提交或视频轮询若从上游获得该任务的 `usage.credits_used`，按原值记入用量并在控制台显示。未报告时显示未知。任务详情支持图片预览和视频播放。
+账号池版使用从空库初始化的数据库。启动和初始化命令会检查结构版本，发现旧原型库或版本不匹配时在写入前退出。若要保留旧数据，可给账号池版指定独立的新数据库或数据卷。
 
-## 运行规则
+调用端的 Responses、Messages 与媒体 API 路径延续。公开模型 ID 使用 `<账号池>/<模型>`，客户端更新模型配置并使用新签发的池授权 Key。旧的手工连接、模型路由和计费试算入口已退役。
 
-- 路由支持草稿校验和将历史版本重发为新的版本。CLI 接入验证采用服务端签发的项目检查 ID，只有该检查开始后的实际生成请求才会使状态成功。
-- 应用内部 `/metrics` 提供媒体队列、未确认提交、活跃任务、过期租约及最老排队任务时间。Caddy 公网入口屏蔽此路径。
-- 编程路由可配置一个同供应商、同区域、同额度域的备用连接。仅在原连接拨号失败且未发送请求时切换一次。流已经开始时保留断流记录。
-- 请求、媒体任务使用按项目与过滤条件签名的游标。控制台可翻页并回到最新记录。
-- 每小时执行一次清理。终态任务素材、成品和幂等键保留 30 天，审计保留 90 天。清理上游用量关联之外的旧诊断记录，保留未决任务和账本引用。无引用的本地文件至少经过 24 小时宽限期才回收。
-- 项目管理员可在后台为指标发布版本化内部积分价格，并对已确认的编程用量执行计费试算。每次尝试和指标只能入账一次，按调用发生前已生效的费率计算。支付、充值、退款和自动扣款需要独立的运营方案及授权。
+## 部署与验证
 
-## 数据库初始化
+Docker Compose 与 SSH 部署见 [部署指南](deploy/README.md)。架构与实施范围见 [账号池反代网关设计](docs/account-proxy-design.md)。
 
-`pnpm reset` 会停止当前工作区的实例，用新建的 PostgreSQL 库替换 `data/postgres`，再用 `deploy/.env` 初始化管理员、默认项目和网关 Key，并启动服务。本地数据库中的数据会被清空。设置了 `DATABASE_URL` 时，命令会拒绝执行。
-
-`gatewayctl init-db` 从单份 SQL 初始化空库，启动时可重复执行。
-
-## 验证
-
-- 后端编译和静态检查：`cd backend && go test ./... && go vet ./...`。
-- PostgreSQL 集成测试：将 `TEST_DATABASE_URL` 指向专用测试数据库，在 `backend/` 执行 `go test ./tests/integration -count=1 -v`。仅在有该环境变量时启用。CI 启动 PostgreSQL 16 并执行。
-- 集成测试用模拟上游覆盖原生 SSE、流中断、备用连接、图片和视频交付、受理确认丢失、租约恢复、幂等冲突、跨项目隔离、游标验签、撤销、保留清理、路由重发、接入验证、报告积分、混合运行和幂等计费。
-- 控制台构建：`cd frontend && npm ci && npm run build`。
-- 真实 Codex、Claude Code 和即梦验收需要获授权的上游连接、对应模型与客户端。试算账本使用内部积分。
-
-上线前可用 `go test ./tests/integration -run TestLiveAuthorized -v` 做授权环境冒烟验证。仅在显式设置 `GATEWAY_LIVE_TEST=1`、`GATEWAY_LIVE_URL` 和 `GATEWAY_LIVE_KEY` 时发请求。逐项设置 `GATEWAY_LIVE_OPENAI_MODEL`、`GATEWAY_LIVE_ANTHROPIC_MODEL`、`GATEWAY_LIVE_IMAGE_MODEL` 或 `GATEWAY_LIVE_VIDEO_MODEL`，仅运行已配置的链路。该测试会消耗相应的真实上游额度。
-
-[集成测试覆盖表与参考项目](docs/test-coverage.md)
+- `pnpm lint` 检查前端、脚本和 Go 静态检查。 `pnpm --dir frontend run build` 构建控制台。
+- `go -C backend test ./...` 运行 Go 测试。将 `TEST_DATABASE_URL` 指向专用测试 PostgreSQL 启用集成测试，覆盖账号入池、模型权限、Key 轮换、SSE、媒体幂等、异步交付和任务恢复。
+- 真实账号可使用 `go -C backend test ./tests/integration -run TestLiveAuthorized -v`。显式设置 `GATEWAY_LIVE_TEST=1`、`GATEWAY_LIVE_URL`、`GATEWAY_LIVE_KEY`，按需设置 `GATEWAY_LIVE_OPENAI_MODEL`、`GATEWAY_LIVE_ANTHROPIC_MODEL`、`GATEWAY_LIVE_IMAGE_MODEL` 或 `GATEWAY_LIVE_VIDEO_MODEL`。测试发送实际请求并消耗上游额度。

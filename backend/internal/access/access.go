@@ -99,9 +99,21 @@ type Querier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
-func (s Store) Issue(ctx context.Context, q Querier, who Identity, label string) (id, stringKey string, err error) {
+func keyMaterial() (string, string) {
 	prefix := "ag_" + platform.Random()[:16]
-	raw := prefix + "." + platform.Random()
+	return prefix, prefix + "." + platform.Random()
+}
+
+func (s Store) Rotate(ctx context.Context, q Querier, who Identity, id string) (string, error) {
+	prefix, raw := keyMaterial()
+	err := q.QueryRow(ctx, `UPDATE api_keys SET prefix=$4,digest=$5
+ WHERE id::text=$1 AND project_id=$2 AND principal_id=$3 AND revoked_at IS NULL RETURNING id`,
+		id, who.Project, who.Principal, prefix, platform.Digest(s.Key, raw)).Scan(&id)
+	return raw, err
+}
+
+func (s Store) Issue(ctx context.Context, q Querier, who Identity, label string) (id, stringKey string, err error) {
+	prefix, raw := keyMaterial()
 	err = q.QueryRow(ctx, `INSERT INTO api_keys(tenant_id,project_id,principal_id,label,prefix,digest,scopes)
  VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`, who.Tenant, who.Project, who.Principal, label, prefix, platform.Digest(s.Key, raw), Scopes).Scan(&id)
 	return id, raw, err

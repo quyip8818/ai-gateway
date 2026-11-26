@@ -37,6 +37,9 @@ func main() {
 		if len(os.Args) != 2 {
 			log.Fatal("usage: gatewayctl bootstrap (password on stdin)")
 		}
+		if err = schema.Check(ctx, db); err != nil {
+			log.Fatal(err)
+		}
 		if err = bootstrap(ctx, db, os.Getenv("BOOTSTRAP_USERNAME"), os.Stdin); err != nil {
 			log.Fatal(err)
 		}

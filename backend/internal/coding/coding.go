@@ -18,6 +18,7 @@ import (
 	"ai-gateway/internal/catalog"
 	"ai-gateway/internal/metering"
 	"ai-gateway/internal/platform"
+	"ai-gateway/internal/protocol"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -58,14 +59,14 @@ func (s *Service) release(keys ...string) {
 	}
 }
 
-func apiError(w http.ResponseWriter, provider string, status int, code string) {
+func apiError(w http.ResponseWriter, wire protocol.Kind, status int, code string) {
 	kind := map[int]string{400: "invalid_request_error", 401: "authentication_error", 403: "permission_error", 404: "not_found_error", 429: "rate_limit_error", 502: "api_error", 503: "overloaded_error"}[status]
 	if kind == "" {
 		kind = "invalid_request_error"
 	}
 	detail := map[string]string{"type": kind, "message": code}
 	body := map[string]any{"error": detail}
-	if provider == "anthropic" {
+	if wire == protocol.Messages {
 		body["type"] = "error"
 		body["request_id"] = w.Header().Get("X-Request-Id")
 	} else {
@@ -74,26 +75,26 @@ func apiError(w http.ResponseWriter, provider string, status int, code string) {
 	platform.JSON(w, status, body)
 }
 
-func (s *Service) Models(w http.ResponseWriter, r *http.Request, provider, operation string) {
+func (s *Service) Models(w http.ResponseWriter, r *http.Request, wire protocol.Kind) {
 	who, err := s.Access.API(r, "models:read")
 	if err != nil {
-		apiError(w, provider, access.HTTPStatus(err), "model_list_unavailable")
+		apiError(w, wire, access.HTTPStatus(err), "model_list_unavailable")
 		return
 	}
-	models, err := s.Catalog.Models(r.Context(), who.Project, operation)
+	models, err := s.Catalog.Models(r.Context(), who, wire)
 	if err != nil {
-		apiError(w, provider, 503, "model_list_unavailable")
+		apiError(w, wire, 503, "model_list_unavailable")
 		return
 	}
 	data := []map[string]any{}
 	for _, m := range models {
-		if provider == "anthropic" {
+		if wire == protocol.Messages {
 			data = append(data, map[string]any{"id": m.ID, "type": "model", "display_name": m.ID, "created_at": "2024-01-01T00:00:00Z"})
 		} else {
-			data = append(data, map[string]any{"id": m.ID, "object": "model", "owned_by": provider, "created": 0})
+			data = append(data, map[string]any{"id": m.ID, "object": "model", "owned_by": m.Provider, "created": 0})
 		}
 	}
-	if provider == "anthropic" {
+	if wire == protocol.Messages {
 		var first, last any
 		if len(data) > 0 {
 			first = data[0]["id"]
@@ -105,46 +106,60 @@ func (s *Service) Models(w http.ResponseWriter, r *http.Request, provider, opera
 	platform.JSON(w, 200, map[string]any{"object": "list", "data": data})
 }
 
-func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, provider, operation, path string) {
+func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, wire protocol.Kind, path string) {
 	who, err := s.Access.API(r, "coding:invoke")
 	if err != nil {
-		apiError(w, provider, access.HTTPStatus(err), "access_denied")
+		apiError(w, wire, access.HTTPStatus(err), "access_denied")
 		return
 	}
 	content, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
 	if err != nil {
-		apiError(w, provider, 413, "body_too_large")
+		apiError(w, wire, 413, "body_too_large")
 		return
 	}
 	var fields map[string]json.RawMessage
 	var model string
 	if json.Unmarshal(content, &fields) != nil || json.Unmarshal(fields["model"], &model) != nil || strings.TrimSpace(model) == "" {
-		apiError(w, provider, 400, "valid_model_required")
+		apiError(w, wire, 400, "valid_model_required")
 		return
 	}
-	route, err := s.Catalog.Get(r.Context(), who.Project, operation, model, "", false)
+	operation := wire.DefaultOperation()
+	countTokens := strings.HasSuffix(path, "/count_tokens")
+	route, err := s.Catalog.Pick(r.Context(), who, wire, model, catalog.Target{}, countTokens)
 	if errors.Is(err, pgx.ErrNoRows) {
-		apiError(w, provider, 404, "model_not_found")
+		if countTokens {
+			// Distinguish a visible model without token counting from an ungranted model.
+			models, listErr := s.Catalog.Models(r.Context(), who, wire)
+			if listErr == nil {
+				for _, entry := range models {
+					if entry.ID == model {
+						apiError(w, wire, 400, "token_count_unsupported")
+						return
+					}
+				}
+			}
+		}
+		apiError(w, wire, 404, "model_not_found")
 		return
 	}
-	if err != nil || route.Provider != provider {
-		apiError(w, provider, 503, "route_unavailable")
+	if err != nil {
+		apiError(w, wire, 503, "route_unavailable")
 		return
 	}
-	keys := []string{"project:" + who.Project, "upstream:" + provider + ":" + route.Quota}
+	keys := []string{"project:" + who.Project}
 	if !s.acquire(keys...) {
-		apiError(w, provider, 429, "concurrency_exceeded")
+		apiError(w, wire, 429, "concurrency_exceeded")
 		return
 	}
 	defer s.release(keys...)
 	requestID := w.Header().Get("X-Request-Id")
 	kind := operation
-	if strings.HasSuffix(path, "/count_tokens") {
+	if countTokens {
 		kind = "count_tokens"
 	}
-	attempt, err := s.Metrics.Start(r.Context(), who, requestID, route.ID, route.Connection, kind, model)
+	attempt, err := s.Metrics.Start(r.Context(), who, requestID, route.ModelID, route.AccountID, kind, model)
 	if err != nil {
-		apiError(w, provider, 503, "request_store_unavailable")
+		apiError(w, wire, 503, "request_store_unavailable")
 		return
 	}
 	status, stage, failure := "interrupted", "upstream", "upstream_interrupted"
@@ -168,40 +183,28 @@ func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, provider, opera
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
 	defer cancel()
-	send := func(route catalog.Route) (*http.Response, error) {
+	send := func(route catalog.Target) (*http.Response, error) {
 		req, err := http.NewRequestWithContext(ctx, "POST", route.Base+path, bytes.NewReader(content))
 		if err != nil {
 			return nil, err
 		}
 		req.GetBody = nil
 		req.Header.Set("Content-Type", "application/json")
-		if provider == "anthropic" {
-			req.Header.Set("x-api-key", route.Token)
-			version := r.Header.Get("anthropic-version")
-			if version == "" {
-				version = "2023-06-01"
-			}
-			req.Header.Set("anthropic-version", version)
-			for _, beta := range r.Header.Values("anthropic-beta") {
-				req.Header.Add("anthropic-beta", beta)
-			}
-		} else {
-			req.Header.Set("Authorization", "Bearer "+route.Token)
-		}
+		route.Protocol.Authorize(req.Header, route.Token, r.Header)
 		return s.Client.Do(req)
 	}
 	resp, err := send(route)
 	var dial *net.OpError
 	if err != nil && ctx.Err() == nil && errors.As(err, &dial) && dial.Op == "dial" {
-		if alternate, backupErr := s.Catalog.Backup(ctx, route); backupErr == nil {
-			if next, retryErr := s.Metrics.Retry(ctx, requestID, attempt, alternate.Connection); retryErr == nil {
+		if alternate, backupErr := s.Catalog.Pick(ctx, who, wire, model, route, countTokens); backupErr == nil {
+			if next, retryErr := s.Metrics.Retry(ctx, requestID, attempt, alternate.AccountID); retryErr == nil {
 				attempt = next
 				resp, err = send(alternate)
 			}
 		}
 	}
 	if err != nil {
-		apiError(w, provider, 502, "upstream_unreachable")
+		apiError(w, wire, 502, "upstream_unreachable")
 		return
 	}
 	defer resp.Body.Close()
@@ -218,7 +221,7 @@ func (s *Service) Invoke(w http.ResponseWriter, r *http.Request, provider, opera
 	if resp.StatusCode >= 300 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 		if err != nil || len(raw) > 16<<20 || !json.Valid(raw) {
-			apiError(w, provider, 502, "invalid_upstream_response")
+			apiError(w, wire, 502, "invalid_upstream_response")
 			return
 		}
 		if resp.StatusCode >= 300 {

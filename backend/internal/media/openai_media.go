@@ -36,7 +36,6 @@ type capabilities struct {
 	Roles      []string          `json:"input_roles"`
 	VideoSizes map[string]string `json:"video_sizes"`
 	ImageSizes map[string]string `json:"image_sizes"`
-	ImageAPI   string            `json:"image_api"`
 }
 
 func loadCapabilities(raw []byte) (capabilities, error) {
@@ -44,26 +43,7 @@ func loadCapabilities(raw []byte) (capabilities, error) {
 	if err := json.Unmarshal(raw, &caps); err != nil {
 		return caps, err
 	}
-	if caps.ImageAPI != "" && caps.ImageAPI != "legacy" && caps.ImageAPI != "openai" {
-		return caps, errors.New("unsupported image API contract")
-	}
 	return caps, nil
-}
-
-func ValidateCapabilities(operation string, raw []byte) error {
-	if operation != "image.generate" && operation != "video.generate" {
-		return nil
-	}
-	caps, err := loadCapabilities(raw)
-	if err != nil {
-		return err
-	}
-	for _, ratio := range caps.Ratios {
-		if ratio == "" || !caps.hasSize(operation, ratio) {
-			return errors.New("missing size for configured aspect ratio")
-		}
-	}
-	return nil
 }
 
 func allowed(input Input, raw []byte) bool {
@@ -99,7 +79,7 @@ func (caps capabilities) hasSize(operation, ratio string) bool {
 	if operation == "video.generate" {
 		return caps.VideoSizes[ratio] != ""
 	}
-	return operation != "image.generate" || caps.ImageAPI != "openai" || caps.ImageSizes[ratio] != ""
+	return caps.ImageSizes[ratio] != ""
 }
 
 func buildSubmission(input Input, caps capabilities, model, reference string) (string, map[string]any) {
@@ -119,15 +99,6 @@ func buildSubmission(input Input, caps capabilities, model, reference string) (s
 	}
 	payload["n"] = 1
 	payload["response_format"] = "b64_json"
-	if caps.ImageAPI != "openai" {
-		if ratio != "" {
-			payload["ratio"] = ratio
-		}
-		if reference != "" {
-			payload["filePath"] = reference
-		}
-		return "/v1/images/generations", payload
-	}
 	if ratio != "" {
 		payload["size"] = caps.ImageSizes[ratio]
 	}

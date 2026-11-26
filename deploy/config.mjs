@@ -33,7 +33,11 @@ export function deploymentConfig(values) {
     KEY_DIGEST_SECRET: key = "",
     CONNECTION_SECRET: encryption = "",
     JIMENG_NETWORK: network = "",
-    JIMENG_BASE_URL: jimeng = "",
+    JIMENG_ACCOUNT_BASE_URL: jimeng = "",
+    CODEX_ACCOUNT_BASE_URL: codex = "",
+    KIRO_ACCOUNT_BASE_URL: kiro = "",
+    CLAUDE_ACCOUNT_BASE_URL: claude = "",
+    ACCOUNT_CONFIG_DIR: accounts = "",
     JIMENG_DOWNLOAD_HOSTS: downloadHosts = "",
   } = values;
   if (
@@ -59,10 +63,11 @@ export function deploymentConfig(values) {
     }
   }
   const { username, password } = bootstrapCredentials(values);
-  if (network && (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(network) || !jimeng)) {
-    throw new Error(
-      "配置 JIMENG_NETWORK 时，请填写有效的网络名和 JIMENG_BASE_URL",
-    );
+  if (network && !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(network)) {
+    throw new Error("JIMENG_NETWORK 必须是有效的 Docker 网络名");
+  }
+  if (accounts && (!accounts.startsWith("/") || accounts === "/")) {
+    throw new Error("ACCOUNT_CONFIG_DIR 必须是服务器上配置目录的绝对路径");
   }
   const deployPort = port(appPort, "DEPLOY_PORT");
   const runtime = {
@@ -77,12 +82,19 @@ export function deploymentConfig(values) {
     SITE_ADDRESS: ":80",
     DEPLOY_PORT: deployPort,
     BOOTSTRAP_USERNAME: username,
-    JIMENG_BASE_URL: jimeng && serviceURL(jimeng, "JIMENG_BASE_URL"),
+    JIMENG_ACCOUNT_BASE_URL:
+      jimeng && serviceURL(jimeng, "JIMENG_ACCOUNT_BASE_URL"),
+    CODEX_ACCOUNT_BASE_URL:
+      codex && serviceURL(codex, "CODEX_ACCOUNT_BASE_URL"),
+    KIRO_ACCOUNT_BASE_URL: kiro && serviceURL(kiro, "KIRO_ACCOUNT_BASE_URL"),
+    CLAUDE_ACCOUNT_BASE_URL:
+      claude && serviceURL(claude, "CLAUDE_ACCOUNT_BASE_URL"),
     JIMENG_DOWNLOAD_HOSTS: downloadHosts
       .split(",")
       .map((item) => item.trim())
       .join(","),
     ...(network ? { JIMENG_NETWORK: network } : {}),
+    ...(accounts ? { ACCOUNT_CONFIG_DIR: accounts } : {}),
   };
   if (Object.values(runtime).some((value) => /[\r\n\0]/.test(value))) {
     throw new Error("部署运行配置须为单行值");

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ai-gateway/internal/access"
+	"ai-gateway/internal/accounts"
 	"ai-gateway/internal/app"
 	"ai-gateway/internal/catalog"
 	"ai-gateway/internal/coding"
@@ -27,6 +28,8 @@ import (
 	"ai-gateway/internal/media"
 	"ai-gateway/internal/metering"
 	"ai-gateway/internal/platform"
+	"ai-gateway/internal/protocol"
+	"ai-gateway/internal/providers"
 	"ai-gateway/internal/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -57,11 +60,53 @@ func TestGateway(t *testing.T) {
 	const followBody = `{"model":"local","input":[{"type":"function_call_output","call_id":"call_fixture","output":"ok"}],"stream":true,"extra_fixture":{"preserve":true}}`
 	startedMedia := make(chan struct{}, 1)
 	releaseMedia := make(chan struct{})
-	var retries atomic.Int32
+	var ambiguousVideos atomic.Int32
 	var ambiguousImages atomic.Int32
-	var recordedKey atomic.Value
+	var jimengProvisioned atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/dashboard/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "local-session", Path: "/"})
+			io.WriteString(w, `{"success":true}`)
+		case "/dashboard/logout", "/dashboard/keys/1", "/account-pool/imported":
+			io.WriteString(w, `{"success":true}`)
+		case "/account-pool/":
+			if _, err := r.Cookie("session"); err != nil {
+				w.WriteHeader(401)
+				return
+			}
+			if r.Method == "POST" {
+				var input map[string]string
+				if json.NewDecoder(r.Body).Decode(&input) != nil || input["sessionId"] != "fixture-cookie" {
+					w.WriteHeader(400)
+					return
+				}
+				jimengProvisioned.Store(true)
+				io.WriteString(w, `{"id":"imported"}`)
+			} else if jimengProvisioned.Load() {
+				io.WriteString(w, `[{"id":"imported"}]`)
+			} else {
+				io.WriteString(w, "[]")
+			}
+		case "/dashboard/keys":
+			if r.Method == "POST" {
+				io.WriteString(w, `{"key":"jm_fixture_managed","apiKey":{"id":1}}`)
+			} else {
+				io.WriteString(w, "[]")
+			}
+		case "/token/check":
+			io.WriteString(w, `{"live":true}`)
+		case "/v1/models":
+			switch {
+			case r.Header.Get("Authorization") == "Bearer jm_fixture_managed":
+				io.WriteString(w, `{"data":[{"id":"image-fixture","owned_by":"jimeng-image"},{"id":"video-fixture","owned_by":"jimeng-video"}]}`)
+			case r.Header.Get("Authorization") == "Bearer codex-oauth":
+				io.WriteString(w, `{"data":[{"id":"gpt-fixture"}]}`)
+			case r.Header.Get("x-api-key") == "kiro-token" || r.Header.Get("x-api-key") == "claude-token" || r.Header.Get("x-api-key") == "lab-token":
+				io.WriteString(w, `{"data":[{"id":"claude-fixture"}]}`)
+			default:
+				w.WriteHeader(401)
+			}
 		case "/v1/responses":
 			body, _ := io.ReadAll(r.Body)
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -97,13 +142,21 @@ func TestGateway(t *testing.T) {
 			io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4}}}\n\n")
 		case "/v1/messages/count_tokens":
 			w.Header().Set("Content-Type", "application/json")
-			if r.Header.Get("x-api-key") != "mock-key" || r.Header.Get("Authorization") != "" || r.Header.Get("anthropic-version") != "2023-06-01" || r.Header.Get("anthropic-beta") != "fixture-beta" {
+			key := r.Header.Get("x-api-key")
+			validKey := key == "claude-token" || key == "lab-token" || key == "mock-key" && r.Header.Get("anthropic-beta") == "fixture-beta"
+			if !validKey || r.Header.Get("Authorization") != "" || r.Header.Get("anthropic-version") != "2023-06-01" {
 				http.Error(w, "header mismatch", 400)
 				return
 			}
 			io.WriteString(w, `{"input_tokens":7}`)
 
 		case "/v1/messages":
+			switch r.Header.Get("x-api-key") {
+			case "mock-key", "kiro-token", "claude-token", "lab-token":
+			default:
+				w.WriteHeader(401)
+				return
+			}
 			w.Header().Set("Content-Type", "text/event-stream")
 			io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\ndata: {\"type\":\"message_stop\"}\n\n")
 
@@ -117,6 +170,14 @@ func TestGateway(t *testing.T) {
 			io.WriteString(w, `{"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC9sAAAAASUVORK5CYII="}]}`)
 		case "/v1/images/generations":
 			body, _ := io.ReadAll(r.Body)
+			if bytes.Contains(body, []byte(`"model":"image-fixture"`)) {
+				if r.Header.Get("Authorization") != "Bearer jm_fixture_managed" {
+					w.WriteHeader(401)
+					return
+				}
+				io.WriteString(w, `{"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC9sAAAAASUVORK5CYII="}]}`)
+				return
+			}
 			if strings.Contains(string(body), "mixed-load-image") {
 				startedMedia <- struct{}{}
 				select {
@@ -136,28 +197,26 @@ func TestGateway(t *testing.T) {
 			io.WriteString(w, `{"usage":{"credits_used":1.25},"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aC9sAAAAASUVORK5CYII="}]}`)
 		case "/v1/videos":
 			body, _ := io.ReadAll(r.Body)
+			if bytes.Contains(body, []byte(`"model":"video-fixture"`)) {
+				if r.Header.Get("Authorization") != "Bearer jm_fixture_managed" {
+					w.WriteHeader(401)
+					return
+				}
+				io.WriteString(w, `{"id":"video_enrolled"}`)
+				return
+			}
 			if bytes.Contains(body, []byte("data:image/png;base64,")) {
 				sawReference.Store(true)
 			}
-			if strings.Contains(string(body), "recover-once") {
-				key := r.Header.Get("Idempotency-Key")
-				if retries.Add(1) == 1 {
-					recordedKey.Store(key)
-					if c, _, err := w.(http.Hijacker).Hijack(); err == nil {
-						c.Close()
-					}
+			if strings.Contains(string(body), "never-replay-video") {
+				if r.Header.Get("Idempotency-Key") == "" {
+					w.WriteHeader(400)
 					return
 				}
-				if key == "" || key != recordedKey.Load() {
-					w.WriteHeader(409)
-					return
+				ambiguousVideos.Add(1)
+				if connection, _, err := w.(http.Hijacker).Hijack(); err == nil {
+					connection.Close()
 				}
-				io.WriteString(w, `{"id":"video_fixture"}`)
-				return
-			}
-			if strings.Contains(string(body), "never-replay-image") {
-				ambiguousImages.Add(1)
-				w.WriteHeader(502)
 				return
 			}
 			calls.Add(1)
@@ -168,6 +227,19 @@ func TestGateway(t *testing.T) {
 				return
 			}
 			io.WriteString(w, `{"status":"completed"}`)
+		case "/v1/videos/video_enrolled":
+			if r.Header.Get("Authorization") != "Bearer jm_fixture_managed" {
+				w.WriteHeader(401)
+				return
+			}
+			io.WriteString(w, `{"status":"completed"}`)
+		case "/v1/videos/video_enrolled/content":
+			if r.Header.Get("Authorization") != "Bearer jm_fixture_managed" {
+				w.WriteHeader(401)
+				return
+			}
+			w.Header().Set("Content-Type", "video/mp4")
+			io.WriteString(w, "\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
 		case "/v1/videos/video_fixture/content":
 			w.Header().Set("Content-Type", "video/mp4")
 			io.WriteString(w, "\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
@@ -191,9 +263,16 @@ func TestGateway(t *testing.T) {
 		run("INSERT INTO tenants(id,name) VALUES($1,'test')", who.Tenant)
 		run("INSERT INTO projects(id,tenant_id,name) VALUES($1,$2,'test')", who.Project, who.Tenant)
 		run("INSERT INTO project_principals(id,tenant_id,project_id,role) VALUES($1,$2,$3,'service')", who.Principal, who.Tenant, who.Project)
-		_, token, err := a.Issue(ctx, db, who, "integration")
+		keyID, token, err := a.Issue(ctx, db, who, "integration")
 		if err != nil {
 			t.Fatal(err)
+		}
+		pools := map[string]string{}
+		for provider, id := range map[string]string{"openai": "codex", "anthropic": "claude", "jimeng": "jimeng"} {
+			pool := platform.ID()
+			pools[provider] = pool
+			run("INSERT INTO account_pools(id,tenant_id,project_id,provider,slug) VALUES($1,$2,$3,$4,$4||'-fixture')", pool, who.Tenant, who.Project, id)
+			run("INSERT INTO key_grants(tenant_id,project_id,key_id,principal_id,pool_id) VALUES($1,$2,$3,$4,$5)", who.Tenant, who.Project, keyID, who.Principal, pool)
 		}
 		for op, provider := range map[string]string{"responses": "openai", "messages": "anthropic", "image.generate": "jimeng", "video.generate": "jimeng"} {
 			conn := platform.ID()
@@ -201,8 +280,13 @@ func TestGateway(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run("INSERT INTO connections(id,tenant_id,project_id,provider,label,base_url,token,quota_scope) VALUES($1,$2,$3,$4,$4,$5,$6,$1::uuid::text)", conn, who.Tenant, who.Project, provider, upstream.URL, secure)
-			run("INSERT INTO model_routes(tenant_id,project_id,operation,model,upstream_model,connection_id,version) VALUES($1,$2,$3,'local','local',$4,1)", who.Tenant, who.Project, op, conn)
+			wire := protocol.Kind(op)
+			if provider == "jimeng" {
+				wire = protocol.Media
+			}
+			run(`INSERT INTO upstream_accounts(id,tenant_id,project_id,pool_id,protocol,label,base_url,execution_secret,managed,credential_fingerprint,count_tokens)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,$9,$10)`, conn, who.Tenant, who.Project, pools[provider], wire, provider, upstream.URL, secure, []byte(conn), op == "messages")
+			run("INSERT INTO account_models(tenant_id,project_id,operation,model,upstream_model,account_id) VALUES($1,$2,$3,'local','local',$4)", who.Tenant, who.Project, op, conn)
 		}
 		return who, token
 	}
@@ -213,7 +297,26 @@ func TestGateway(t *testing.T) {
 	defer stopWorker()
 	workerDone := make(chan struct{})
 	go func() { defer close(workerDone); m.Run(workerContext) }()
-	server := httptest.NewServer((app.App{DB: db, Access: a, Coding: &coding.Service{Access: a, Catalog: c, Metrics: metering.Store{DB: db}, Client: upstream.Client()}, Media: m, Console: console.Service{DB: db, Store: a, Catalog: c, PublicBase: "http://console.local"}}).Handler())
+	providerRegistry, err := providers.New(providers.Config{Codex: upstream.URL, Kiro: upstream.URL, Claude: upstream.URL}).WithExecutors(
+		[]providers.Executor{{Provider: "jimeng", URL: upstream.URL, Username: "fixture", Password: "fixture"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRegistry, err = providerRegistry.WithCompatible([]providers.Compatible{{
+		ID: "lab", Label: "Lab", Base: upstream.URL, Protocol: protocol.Messages, CountTokens: true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerRegistry = providerRegistry.WithOAuthClients(map[string]providers.OAuthClient{"codex": {
+		AuthorizeURL: "https://issuer.invalid/authorize", TokenURL: "https://issuer.invalid/token", ClientID: "fixture-client",
+	}})
+	server := httptest.NewServer((app.App{DB: db, Access: a, Coding: &coding.Service{Access: a, Catalog: c, Metrics: metering.Store{DB: db}, Client: upstream.Client()}, Media: m, Console: console.Service{DB: db, Store: a, Catalog: c, PublicBase: "http://console.local",
+		AccountsService: accounts.Service{DB: db, Key: enc,
+			Providers: providerRegistry,
+		},
+	}}).Handler())
 	defer server.Close()
 	send := func(verb, path, payload, key, idem string, want int) string {
 		t.Helper()
@@ -332,11 +435,22 @@ func TestGateway(t *testing.T) {
 	if err != nil || res.StatusCode != 201 || asset.ID == "" {
 		t.Fatalf("upload status=%d: %v", res.StatusCode, err)
 	}
-	if _, err = db.Exec(ctx, `UPDATE model_routes SET capabilities='{"input_roles":["first_frame"]}' WHERE operation='video.generate'`); err != nil {
+	if _, err = db.Exec(ctx, `UPDATE account_models SET capabilities='{"input_roles":["first_frame"]}' WHERE operation='video.generate'`); err != nil {
 		t.Fatal(err)
 	}
 	withReference := `{"model":"local","operation":"video.generate","prompt":"test","inputs":[{"role":"first_frame","asset_id":"` + asset.ID + `"}]}`
 	send("POST", "/media/v1/jobs", withReference, other, "foreign-asset", 404)
+	siblingID, siblingKey, err := a.Issue(ctx, db, owner, "same-principal-media-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(ctx, `INSERT INTO key_grants(tenant_id,project_id,key_id,principal_id,pool_id)
+ SELECT tenant_id,project_id,$2,$3,id FROM account_pools WHERE project_id=$1 AND slug='jimeng-fixture'`, owner.Project, siblingID, owner.Principal); err != nil {
+		t.Fatal(err)
+	}
+	if result := send("POST", "/media/v1/jobs", withReference, siblingKey, "other-key-asset", 404); !strings.Contains(result, "asset_not_found") {
+		t.Fatalf("same-principal Key reached the wrong authorization check: %s", result)
+	}
 
 	for _, op := range []string{"image.generate", "video.generate"} {
 		payload := `{"model":"local","operation":"` + op + `","prompt":"test"}`
@@ -414,12 +528,22 @@ func TestGateway(t *testing.T) {
 	}
 
 	var imageConn string
-	if err = db.QueryRow(ctx, `SELECT connection_id FROM model_routes WHERE project_id=$1 AND operation='image.generate'`, owner.Project).Scan(&imageConn); err != nil {
+	if err = db.QueryRow(ctx, `SELECT account_id FROM account_models WHERE project_id=$1 AND operation='image.generate'`, owner.Project).Scan(&imageConn); err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(ctx, `INSERT INTO model_routes(tenant_id,project_id,operation,model,upstream_model,connection_id,version,capabilities)
-	VALUES($1,$2,'image.generate','modern-image','local',$3,1,'{"image_api":"openai","aspect_ratios":["1:1"],"image_sizes":{"1:1":"1024x1024"},"input_roles":["reference_image"]}')`, owner.Tenant, owner.Project, imageConn)
+	_, err = db.Exec(ctx, `INSERT INTO account_models(tenant_id,project_id,operation,model,upstream_model,account_id,capabilities)
+	VALUES($1,$2,'image.generate','modern-image','local',$3,'{"aspect_ratios":["1:1"],"image_sizes":{"1:1":"1024x1024"},"input_roles":["reference_image"]}')`, owner.Tenant, owner.Project, imageConn)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// A less recently used account in the same pool cannot accept image references.
+	if _, err = db.Exec(ctx, `INSERT INTO account_models(tenant_id,project_id,operation,model,upstream_model,account_id)
+ SELECT tenant_id,project_id,'image.generate','modern-image','text-only-image',account_id
+ FROM account_models WHERE project_id=$1 AND operation='video.generate'`, owner.Project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(ctx, `UPDATE upstream_accounts SET last_used_at=NULL WHERE id IN (
+ SELECT account_id FROM account_models WHERE project_id=$1 AND operation='video.generate')`, owner.Project); err != nil {
 		t.Fatal(err)
 	}
 	var edit struct{ ID, Status string }
@@ -438,16 +562,16 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("modern edit reached %s", edit.Status)
 	}
 
-	// A dial failure before any request bytes were sent can use one approved backup.
+	// A dial failure before any request bytes were sent can select another authorized account.
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	dead := "http://" + closed.Addr().String()
 	closed.Close()
-	var primary, quota, route string
-	err = db.QueryRow(ctx, `SELECT r.id,c.id,c.quota_scope FROM model_routes r JOIN connections c ON c.id=r.connection_id
-	WHERE r.project_id=$1 AND r.operation='responses'`, owner.Project).Scan(&route, &primary, &quota)
+	var primary, pool, route string
+	err = db.QueryRow(ctx, `SELECT r.id,a.id,a.pool_id FROM account_models r JOIN upstream_accounts a ON a.id=r.account_id
+	WHERE r.project_id=$1 AND r.operation='responses'`, owner.Project).Scan(&route, &primary, &pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,14 +580,16 @@ func TestGateway(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(ctx, `INSERT INTO connections(id,tenant_id,project_id,provider,label,base_url,token,quota_scope)
-	VALUES($1,$2,$3,'openai','backup',$4,$5,$6)`, backup, owner.Tenant, owner.Project, upstream.URL, sealed, quota); err != nil {
+	if _, err = db.Exec(ctx, `INSERT INTO upstream_accounts(id,tenant_id,project_id,pool_id,protocol,label,base_url,execution_secret,managed,credential_fingerprint,last_used_at)
+ VALUES($1,$2,$3,$4,'responses','backup',$5,$6,false,$7,now())`, backup, owner.Tenant, owner.Project, pool, upstream.URL, sealed, []byte(backup)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(ctx, `INSERT INTO model_route_backups(tenant_id,project_id,route_id,connection_id) VALUES($1,$2,$3,$4)`, owner.Tenant, owner.Project, route, backup); err != nil {
+
+	if _, err = db.Exec(ctx, `INSERT INTO account_models(tenant_id,project_id,operation,model,upstream_model,account_id)
+	SELECT tenant_id,project_id,operation,model,upstream_model,$2 FROM account_models WHERE id=$1`, route, backup); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(ctx, `UPDATE connections SET base_url=$2 WHERE id=$1`, primary, dead); err != nil {
+	if _, err = db.Exec(ctx, `UPDATE upstream_accounts SET base_url=$2 WHERE id=$1`, primary, dead); err != nil {
 		t.Fatal(err)
 	}
 	send("POST", "/openai/v1/responses", `{"model":"local","stream":true}`, token, "", 200)
@@ -473,7 +599,7 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("backup attempts=%d: %v", attempts, err)
 	}
 
-	if _, err = db.Exec(ctx, "UPDATE connections SET base_url=$2 WHERE id=$1", primary, upstream.URL); err != nil {
+	if _, err = db.Exec(ctx, "UPDATE upstream_accounts SET base_url=$2 WHERE id=$1", primary, upstream.URL); err != nil {
 		t.Fatal(err)
 	}
 	output := send("POST", "/openai/v1/responses", `{"model":"local","stream":true,"input":"break-stream"}`, token, "", 200)
@@ -486,10 +612,6 @@ func TestGateway(t *testing.T) {
 	GROUP BY r.status`, owner.Project).Scan(&streamStatus, &attempts)
 	if err != nil || streamStatus != "interrupted" || attempts != 1 {
 		t.Fatalf("interrupted stream status=%s attempts=%d: %v", streamStatus, attempts, err)
-	}
-	// Reconcile only a verified video via exactly the same upstream idempotency key.
-	if _, err = db.Exec(ctx, "UPDATE connections SET video_idempotency_verified=true WHERE project_id=$1 AND provider='jimeng'", owner.Project); err != nil {
-		t.Fatal(err)
 	}
 	waitStatus := func(prompt, op, want string) {
 		t.Helper()
@@ -509,10 +631,7 @@ func TestGateway(t *testing.T) {
 			t.Fatalf("job %s reached %s, want %s", prompt, job.Status, want)
 		}
 	}
-	waitStatus("recover-once", "video.generate", "succeeded")
-	if retries.Load() != 2 {
-		t.Fatalf("expected exactly one safe replay, got %d requests", retries.Load())
-	}
+	waitStatus("never-replay-video", "video.generate", "submit_unknown")
 	waitStatus("never-replay-image", "image.generate", "submit_unknown")
 	stopWorker()
 	<-workerDone
@@ -521,7 +640,7 @@ func TestGateway(t *testing.T) {
 	if err = json.Unmarshal([]byte(send("POST", "/media/v1/jobs", body, token, "abandoned-worker", 202)), &leaseJob); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec(ctx, "UPDATE media_jobs SET status='submitting',lease_until=now()-interval '5 minutes' WHERE id=$1 AND status='queued'", leaseJob.ID); err != nil {
+	if _, err = db.Exec(ctx, "UPDATE media_jobs SET status='submitting',input=NULL,lease_until=now()-interval '5 minutes' WHERE id=$1 AND status='queued'", leaseJob.ID); err != nil {
 		t.Fatal(err)
 	}
 	go m.Run(ctx)
@@ -539,8 +658,8 @@ func TestGateway(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if ambiguousImages.Load() != 1 {
-		t.Fatalf("ambiguous image submission retried %d times", ambiguousImages.Load())
+	if ambiguousImages.Load() != 1 || ambiguousVideos.Load() != 1 {
+		t.Fatalf("ambiguous image/video submissions: %d/%d", ambiguousImages.Load(), ambiguousVideos.Load())
 	}
 	var page struct {
 		Data []struct{ ID string }
@@ -602,7 +721,7 @@ func TestGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 	jar, _ := cookiejar.New(nil)
-	browser := &http.Client{Jar: jar}
+	browser := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	browse := func(method, path, payload string, want int) string {
 		t.Helper()
 		r, err := http.NewRequest(method, server.URL+path, strings.NewReader(payload))
@@ -624,37 +743,125 @@ func TestGateway(t *testing.T) {
 	}
 	browse("POST", "/console/v1/session", `{"username":"`+username+`","password":"fixture-password"}`, 200)
 	base := "/console/v1/projects/" + owner.Project
-	draft := `{"model":"local","upstream":"local","operation":"responses","connection":"` + primary + `","backup":"` + backup + `"}`
-	browse("POST", base+"/routes/validate", draft, 200)
-	browse("POST", base+"/routes/validate", strings.Replace(draft, backup, primary, 1), 400)
-	browse("POST", base+"/routes/publish", draft, 201)
-	browse("POST", base+"/routes/"+route+"/restore", "{}", 201)
-	var count int
-	if err = db.QueryRow(ctx, `SELECT count(*) FROM model_routes WHERE project_id=$1 AND operation='responses' AND active AND version=3`, owner.Project).Scan(&count); err != nil || count != 1 {
-		t.Fatalf("route restore did not publish a new version: %v", err)
+	var authorization struct {
+		ID  string
+		URL string `json:"authorization_url"`
 	}
-	imageDraft := `{"model":"local","upstream":"local","operation":"image.generate","connection":"` + imageConn + `"}`
-	invalidImageDraft := strings.TrimSuffix(imageDraft, "}") + `,"capabilities":{"aspect_ratios":["1:1"]}}`
-	browse("POST", base+"/routes/validate", invalidImageDraft, 400)
-	browse("POST", base+"/routes/publish", invalidImageDraft, 400)
-	var legacyImageRoute string
-	if err = db.QueryRow(ctx, `SELECT id FROM model_routes WHERE project_id=$1 AND model='local' AND operation='image.generate' AND active`, owner.Project).Scan(&legacyImageRoute); err != nil {
+	if err = json.Unmarshal([]byte(browse("POST", base+"/account-authorizations", `{"provider":"codex"}`, 201)), &authorization); err != nil || authorization.ID == "" {
+		t.Fatalf("authorization setup: %v", err)
+	}
+	issuer, err := url.Parse(authorization.URL)
+	if err != nil || issuer.Query().Get("code_challenge_method") != "S256" || issuer.Query().Get("state") == "" {
+		t.Fatalf("authorization binding not issued: %v", err)
+	}
+	callback := "/console/v1/oauth/callback?error=access_denied&state=" + url.QueryEscape(issuer.Query().Get("state"))
+	if result := browse("GET", base+"/account-authorizations/"+authorization.ID, "", 200); !strings.Contains(result, `"status":"waiting"`) {
+		t.Fatal("unexpected pending authorization state")
+	}
+	browse("GET", callback, "", 303)
+	browse("GET", callback, "", 400)
+	if result := browse("GET", base+"/account-authorizations/"+authorization.ID, "", 200); !strings.Contains(result, `"status":"failed"`) {
+		t.Fatal("canceled authorization remained pending")
+	}
+	type enrollment struct {
+		ID     string
+		PoolID string `json:"pool_id"`
+	}
+	enroll := func(provider, credential string) enrollment {
+		t.Helper()
+		body, _ := json.Marshal(map[string]string{"provider": provider, "credential": credential})
+		var result enrollment
+		if err := json.Unmarshal([]byte(browse("POST", base+"/account-enrollments", string(body), 201)), &result); err != nil || result.PoolID == "" {
+			t.Fatalf("enrollment %s: %v", provider, err)
+		}
+		return result
+	}
+	jimeng := enroll("jimeng", "sessionid=fixture-cookie")
+	browse("POST", base+"/account-enrollments", `{"provider":"jimeng","credential":"sessionid=fixture-cookie"}`, 409)
+	codex := enroll("codex", `{"tokens":{"access_token":"codex-oauth"}}`)
+	kiro := enroll("kiro", `{"accessToken":"kiro-token"}`)
+	claude := enroll("claude", "claude-token")
+	lab := enroll("lab", "lab-token")
+	var pooledKey struct{ ID, Key string }
+	if err := json.Unmarshal([]byte(browse("POST", base+"/keys", `{"label":"pooled","pools":["`+codex.PoolID+`","`+kiro.PoolID+`"]}`, 201)), &pooledKey); err != nil || pooledKey.Key == "" {
+		t.Fatalf("issue scoped key: %v", err)
+	}
+	models := send("GET", "/openai/v1/models", "", pooledKey.Key, "", 200)
+	if !strings.Contains(models, "/gpt-fixture") || strings.Contains(models, `"id":"local"`) {
+		t.Fatalf("invalid scoped model list: %s", models)
+	}
+	var codexSlug, kiroSlug, claudeSlug, labSlug string
+	for _, entry := range []struct {
+		id   string
+		slug *string
+	}{{codex.PoolID, &codexSlug}, {kiro.PoolID, &kiroSlug}, {claude.PoolID, &claudeSlug}, {lab.PoolID, &labSlug}} {
+		if err := db.QueryRow(ctx, "SELECT slug FROM account_pools WHERE id=$1", entry.id).Scan(entry.slug); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("POST", "/openai/v1/responses", `{"model":"`+codexSlug+`/gpt-fixture","stream":true}`, pooledKey.Key, "", 200)
+	send("POST", "/anthropic/v1/messages", `{"model":"`+kiroSlug+`/claude-fixture","stream":true}`, pooledKey.Key, "", 200)
+	send("POST", "/openai/v1/responses", `{"model":"local","stream":true}`, pooledKey.Key, "", 404)
+	send("POST", "/anthropic/v1/messages/count_tokens", `{"model":"`+kiroSlug+`/claude-fixture","messages":[]}`, pooledKey.Key, "", 400)
+	var extra struct{ Key string }
+	if err := json.Unmarshal([]byte(browse("POST", base+"/keys", `{"label":"messages","pools":["`+claude.PoolID+`","`+lab.PoolID+`"]}`, 201)), &extra); err != nil || extra.Key == "" {
+		t.Fatalf("issue Key for two Messages providers: %v", err)
+	}
+	for _, slug := range []string{claudeSlug, labSlug} {
+		send("POST", "/anthropic/v1/messages", `{"model":"`+slug+`/claude-fixture","stream":true}`, extra.Key, "", 200)
+		send("POST", "/anthropic/v1/messages/count_tokens", `{"model":"`+slug+`/claude-fixture","messages":[]}`, extra.Key, "", 200)
+		send("POST", "/anthropic/v1/messages", `{"model":"`+slug+`/claude-fixture","stream":true}`, pooledKey.Key, "", 404)
+	}
+
+	var rotated struct{ ID, Key string }
+	if err := json.Unmarshal([]byte(browse("POST", base+"/keys/"+pooledKey.ID+"/rotate", "", 201)), &rotated); err != nil || rotated.ID != pooledKey.ID {
+		t.Fatalf("rotation changed the logical key: %v", err)
+	}
+	send("GET", "/openai/v1/models", "", pooledKey.Key, "", 401)
+	send("GET", "/openai/v1/models", "", rotated.Key, "", 200)
+	var visibleSecrets string
+	visibleSecrets = browse("GET", base+"/accounts", "", 200)
+	if strings.Contains(visibleSecrets, "fixture-cookie") || strings.Contains(visibleSecrets, "jm_fixture_managed") {
+		t.Fatal("account list leaked upstream credentials")
+	}
+	var jimengSlug string
+	if err = db.QueryRow(ctx, "SELECT slug FROM account_pools WHERE id=$1", jimeng.PoolID).Scan(&jimengSlug); err != nil {
 		t.Fatal(err)
 	}
-	browse("POST", base+"/routes/validate", imageDraft, 200)
-	browse("POST", base+"/routes/publish", imageDraft, 201)
-	const imageContractQuery = `SELECT coalesce(capabilities->>'image_api','') FROM model_routes WHERE project_id=$1 AND model='local' AND operation='image.generate' AND active`
-	var imageContract string
-	if err = db.QueryRow(ctx, imageContractQuery, owner.Project).Scan(&imageContract); err != nil || imageContract != "openai" {
-		t.Fatalf("new image route contract %q: %v", imageContract, err)
+	var mediaKey struct{ Key string }
+	if err = json.Unmarshal([]byte(browse("POST", base+"/keys", `{"label":"jimeng","pools":["`+jimeng.PoolID+`"]}`, 201)), &mediaKey); err != nil || mediaKey.Key == "" {
+		t.Fatalf("issue media Key: %v", err)
 	}
-	browse("POST", base+"/routes/"+legacyImageRoute+"/restore", "{}", 201)
-	if err = db.QueryRow(ctx, imageContractQuery, owner.Project).Scan(&imageContract); err != nil || imageContract != "" {
-		t.Fatalf("restored image route contract %q: %v", imageContract, err)
+	for _, kind := range []string{"image", "video"} {
+		var job struct {
+			ID, Status string
+			Artifacts  []string
+		}
+		body := `{"model":"` + jimengSlug + `/` + kind + `-fixture","operation":"` + kind + `.generate","prompt":"test"}`
+		if err = json.Unmarshal([]byte(send("POST", "/media/v1/jobs", body, mediaKey.Key, kind+"-enrolled", 202)), &job); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(12 * time.Second)
+		for job.Status != "succeeded" && time.Now().Before(deadline) {
+			time.Sleep(300 * time.Millisecond)
+			if err = json.Unmarshal([]byte(send("GET", "/media/v1/jobs/"+job.ID, "", mediaKey.Key, "", 200)), &job); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if job.Status != "succeeded" || len(job.Artifacts) != 1 {
+			t.Fatalf("enrolled Jimeng %s job did not deliver: %+v", kind, job)
+		}
+	}
+	browse("PATCH", base+"/accounts/"+jimeng.ID, `{"enabled":false}`, 204)
+	if _, err = db.Exec(ctx, `UPDATE upstream_accounts SET expires_at=now()-interval '1 minute' WHERE id=$1`, codex.ID); err != nil {
+		t.Fatal(err)
+	}
+	if result := send("GET", "/openai/v1/models", "", rotated.Key, "", 200); strings.Contains(result, "/gpt-fixture") {
+		t.Fatalf("expired account model is still visible: %s", result)
 	}
 
 	var keyForCheck string
-	if err = db.QueryRow(ctx, "SELECT id FROM api_keys WHERE principal_id=$1", owner.Principal).Scan(&keyForCheck); err != nil {
+	if err = db.QueryRow(ctx, "SELECT id FROM api_keys WHERE principal_id=$1 AND label='integration'", owner.Principal).Scan(&keyForCheck); err != nil {
 		t.Fatal(err)
 	}
 	var check struct{ ID string }
@@ -673,11 +880,6 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("onboarding missing verified generation: %s", result)
 	}
 
-	legacy := url.Values{"key_id": {keyForCheck}, "operation": {"responses"}, "model": {"local"}, "since": {time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)}}
-	if result := browse("GET", base+"/setup/checks?"+legacy.Encode(), "", 200); !strings.Contains(result, `"status":"succeeded"`) {
-		t.Fatalf("legacy setup check failed: %s", result)
-	}
-
 	browse("GET", base+"/requests", "", 200)
 	var requestPage struct {
 		Next string `json:"next_cursor"`
@@ -686,19 +888,6 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("request cursor missing: %v", err)
 	}
 	browse("GET", base+"/requests?limit=1&cursor="+url.QueryEscape(requestPage.Next), "", 200)
-	browse("POST", base+"/billing/prices", `{"operation":"messages","model":"local","metric":"input_tokens","unit":"token","amount_per_unit":"0.125"}`, 201)
-	send("POST", "/anthropic/v1/messages", `{"model":"local","stream":true}`, token, "", 200)
-	browse("POST", base+"/billing/prices", `{"operation":"messages","model":"local","metric":"input_tokens","unit":"token","amount_per_unit":"0.25"}`, 201)
-	if output := browse("POST", base+"/billing/reconcile", "{}", 200); !strings.Contains(output, `"booked":1`) {
-		t.Fatalf("first settlement: %s", output)
-	}
-	if output := browse("POST", base+"/billing/reconcile", "{}", 200); !strings.Contains(output, `"booked":0`) {
-		t.Fatalf("duplicate settlement: %s", output)
-	}
-	var billed bool
-	if err = db.QueryRow(ctx, "SELECT count(*)=1 AND bool_and(amount=0.375) FROM billing_entries WHERE project_id=$1", owner.Project).Scan(&billed); err != nil || !billed {
-		t.Fatalf("billing amount did not use original price: %v", err)
-	}
 	browse("GET", base+"/usage/export", "", 200)
 	browse("GET", base+"/members", "", 200)
 	if _, err = db.Exec(ctx, "UPDATE api_keys SET revoked_at=now() WHERE principal_id=$1", owner.Principal); err != nil {

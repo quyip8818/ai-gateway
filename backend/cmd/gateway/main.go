@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ai-gateway/internal/access"
+	"ai-gateway/internal/accounts"
 	"ai-gateway/internal/app"
 	"ai-gateway/internal/catalog"
 	"ai-gateway/internal/coding"
@@ -18,6 +19,7 @@ import (
 	"ai-gateway/internal/media"
 	"ai-gateway/internal/metering"
 	"ai-gateway/internal/platform"
+	"ai-gateway/internal/schema"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,7 +46,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer db.Close()
-	if err = db.Ping(ctx); err != nil {
+	if err = schema.Check(ctx, db); err != nil {
 		log.Fatal(err)
 	}
 	workerDB, err := pgxpool.New(ctx, dsn)
@@ -70,9 +72,17 @@ func main() {
 	// The synchronous image endpoint can take longer than the usual response header timeout.
 	tasks := &media.Service{DB: workerDB, Catalog: catalog.Store{DB: workerDB, Key: enc}, Dir: dir,
 		Client: client(60 * time.Second), ImageClient: client(0), DownloadHosts: hosts, CursorKey: key}
+	providerRegistry, err := loadProviders()
+	if err != nil {
+		log.Fatal(err)
+	}
+	accountService := accounts.Service{DB: db, Key: enc, Providers: providerRegistry}
 	a := app.App{DB: db, Access: store, Media: tasks,
-		Coding:  &coding.Service{Access: store, Catalog: registry, Metrics: metering.Store{DB: db}, Client: client(60 * time.Second)},
-		Console: console.Service{DB: db, Store: store, Catalog: registry, PublicBase: public, JimengBase: strings.TrimRight(os.Getenv("JIMENG_BASE_URL"), "/")},
+		Coding: &coding.Service{Access: store, Catalog: registry, Metrics: metering.Store{DB: db}, Client: client(60 * time.Second)},
+		Console: console.Service{
+			DB: db, Store: store, Catalog: registry, PublicBase: public,
+			AccountsService: accountService,
+		},
 	}
 	workersDone := make(chan struct{})
 	go func() {
@@ -93,6 +103,22 @@ func main() {
 				if err != nil {
 					log.Printf("retention sweep: %v", err)
 				}
+			}
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewal, cancel := context.WithTimeout(ctx, 30*time.Second)
+				if err := accountService.RefreshDue(renewal); err != nil && ctx.Err() == nil {
+					log.Print("account credential refresh state unavailable")
+				}
+				cancel()
 			}
 		}
 	}()

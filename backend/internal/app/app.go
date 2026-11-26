@@ -11,6 +11,7 @@ import (
 	"ai-gateway/internal/console"
 	"ai-gateway/internal/media"
 	"ai-gateway/internal/platform"
+	"ai-gateway/internal/protocol"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -36,20 +37,21 @@ func (a App) Handler() http.Handler {
 		w.WriteHeader(204)
 	})
 	mux.HandleFunc("POST /openai/v1/responses", func(w http.ResponseWriter, r *http.Request) {
-		a.Coding.Invoke(w, r, "openai", "responses", "/v1/responses")
+		a.Coding.Invoke(w, r, protocol.Responses, "/v1/responses")
 	})
 	mux.HandleFunc("POST /anthropic/v1/messages", func(w http.ResponseWriter, r *http.Request) {
-		a.Coding.Invoke(w, r, "anthropic", "messages", "/v1/messages")
+		a.Coding.Invoke(w, r, protocol.Messages, "/v1/messages")
 	})
 	mux.HandleFunc("POST /anthropic/v1/messages/count_tokens", func(w http.ResponseWriter, r *http.Request) {
-		a.Coding.Invoke(w, r, "anthropic", "messages", "/v1/messages/count_tokens")
+		a.Coding.Invoke(w, r, protocol.Messages, "/v1/messages/count_tokens")
 	})
-	mux.HandleFunc("GET /openai/v1/models", func(w http.ResponseWriter, r *http.Request) { a.Coding.Models(w, r, "openai", "responses") })
-	mux.HandleFunc("GET /anthropic/v1/models", func(w http.ResponseWriter, r *http.Request) { a.Coding.Models(w, r, "anthropic", "messages") })
+	mux.HandleFunc("GET /openai/v1/models", func(w http.ResponseWriter, r *http.Request) { a.Coding.Models(w, r, protocol.Responses) })
+	mux.HandleFunc("GET /anthropic/v1/models", func(w http.ResponseWriter, r *http.Request) { a.Coding.Models(w, r, protocol.Messages) })
 	for _, method := range []string{"GET", "POST", "DELETE"} {
 		mux.HandleFunc(method+" /console/v1/session", a.Console.Session)
 	}
 	mux.HandleFunc("GET /console/v1/projects", a.Console.Projects)
+	mux.HandleFunc("GET /console/v1/oauth/callback", a.Console.AuthorizationCallback)
 	const p = "/console/v1/projects/{project}"
 	auth := func(method, path string, fn bound) {
 		mux.HandleFunc(method+" "+p+path, func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +76,6 @@ func (a App) Handler() http.Handler {
 		a.Console.KeyAction(w, r, who, true)
 	})
 	auth("POST", "/setup/checks", a.Console.StartSetup)
-	auth("GET", "/setup/checks", a.Console.LegacySetup)
 	auth("GET", "/setup/checks/{id}", a.Console.Setup)
 	auth("GET", "/requests", a.Console.Requests)
 	auth("GET", "/requests/{id}", a.Console.Request)
@@ -83,18 +84,13 @@ func (a App) Handler() http.Handler {
 	auth("GET", "/members", a.Console.Members)
 	auth("PATCH", "/members/{id}", a.Console.Members)
 	auth("GET", "/audit-events", a.Console.Audit)
-	auth("GET", "/billing", a.Console.Billing)
-	auth("GET", "/billing/prices", a.Console.BillingPrice)
-	auth("POST", "/billing/prices", a.Console.BillingPrice)
-	auth("POST", "/billing/reconcile", a.Console.BillingReconcile)
-	auth("PATCH", "/connections/{id}", a.Console.UpdateConnection)
-	auth("POST", "/connections/{id}/probe", a.Console.ProbeConnection)
-	auth("GET", "/connections", a.Console.Connections)
-	auth("POST", "/connections", a.Console.Connections)
-	auth("GET", "/routes", a.Console.Routes)
-	auth("POST", "/routes/publish", a.Console.Routes)
-	auth("POST", "/routes/validate", a.Console.ValidateRoute)
-	auth("POST", "/routes/{id}/restore", a.Console.RestoreRoute)
+	auth("GET", "/providers", a.Console.Providers)
+	auth("GET", "/pools", a.Console.Pools)
+	auth("GET", "/accounts", a.Console.Accounts)
+	auth("POST", "/account-enrollments", a.Console.EnrollAccount)
+	auth("POST", "/account-authorizations", a.Console.StartAuthorization)
+	auth("GET", "/account-authorizations/{id}", a.Console.AuthorizationResult)
+	auth("PATCH", "/accounts/{id}", a.Console.UpdateAccount)
 	for _, endpoint := range []struct {
 		method, path, scope string
 		fn                  bound
