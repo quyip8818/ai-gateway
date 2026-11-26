@@ -43,13 +43,25 @@ function postmasterPID(cluster) {
   }
 }
 
-export async function startDatabase(env, start, run) {
+function assertDatabaseStopped(cluster) {
+  const pid = Math.abs(postmasterPID(cluster) ?? 0);
+  if (!Number.isInteger(pid) || pid < 1 || pid > 0x7fff_ffff) return;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    if (error.code === "ESRCH") return;
+    throw error;
+  }
+  throw new Error(`PostgreSQL 仍在运行（PID ${pid}），请先停止再重置数据库。`);
+}
+
+export async function startDatabase(env, start, run, { reset = false } = {}) {
   const bin = postgresBin(env);
   const pg = (name) => (bin ? join(bin, name) : name);
   const cluster = join(data, "postgres");
   const socket = join(data, "pg");
   mkdirSync(socket, { recursive: true, mode: 0o700 });
-  if (!existsSync(join(cluster, "PG_VERSION"))) {
+  if (reset || !existsSync(join(cluster, "PG_VERSION"))) {
     // A replacement during initdb must never open a partially built cluster.
     const staging = mkdtempSync(join(data, "postgres-init."));
     try {
@@ -61,6 +73,10 @@ export async function startDatabase(env, start, run) {
         "--auth-local=trust",
         "--auth-host=scram-sha-256",
       ]);
+      if (reset) {
+        assertDatabaseStopped(cluster);
+        rmSync(cluster, { recursive: true, force: true });
+      }
       renameSync(staging, cluster);
     } finally {
       rmSync(staging, { recursive: true, force: true });

@@ -6,6 +6,7 @@
   },
   "scripts": {
     "start": "node scripts/start.mjs",
+    "reset": "node scripts/start.mjs --reset",
     "lint": "pnpm --dir frontend run lint && node scripts/vet.mjs",
     "format": "pnpm --dir frontend run format && gofmt -w backend",
     "deploy": "node deploy/deploy.mjs"

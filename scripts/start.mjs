@@ -20,6 +20,7 @@ import { startDatabase } from "./postgres.mjs";
 
 const backend = join(root, "backend");
 const frontend = join(root, "frontend");
+const reset = process.argv[2] === "--reset";
 const children = new Set();
 const detached = process.platform !== "win32";
 let env;
@@ -100,11 +101,16 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
 
 try {
   env = localEnvironment();
+  const local = !env.DATABASE_URL;
+  if (reset && !local) {
+    throw new Error(
+      "pnpm reset 只支持本地数据库。请取消 DATABASE_URL 后重试。",
+    );
+  }
   const { username, password } = bootstrapCredentials(
     readEnv("deploy/.env", { optional: true }),
     { required: true },
   );
-  const local = !env.DATABASE_URL;
   env.HTTP_ADDR ||= "127.0.0.1:32270";
   env.PUBLIC_BASE_URL ||= `http://${env.HTTP_ADDR.replace(/^(?:0\.0\.0\.0|\[::\])?:/, "127.0.0.1:")}`;
   env.MEDIA_STORAGE_DIR ||= join(data, "media");
@@ -114,8 +120,9 @@ try {
     join(data, "launcher.sock"),
     stopChildren,
   );
+  if (shutdown) throw new Error("Startup interrupted");
   if (local) {
-    const postgres = await startDatabase(env, start, run);
+    const postgres = await startDatabase(env, start, run, { reset });
     database = postgres.server;
     await postgres.ready;
   }
