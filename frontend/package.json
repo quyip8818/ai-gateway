@@ -1,0 +1,24 @@
+{
+  "name": "ai-gateway-console",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters && node --check ../scripts/start.mjs && node --check ../deploy/deploy.mjs && bash -n ../deploy/remote.sh && pnpm run prettier --check",
+    "format": "pnpm run prettier --write",
+    "prettier": "prettier src index.html vite.config.ts tsconfig.json package.json ../package.json ../scripts '../deploy/*.mjs'"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router-dom": "7.15.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "vite": "8.3.5"
+  }
+}

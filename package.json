@@ -1,0 +1,13 @@
+{
+  "name": "ai-gateway",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "lint": "pnpm --dir frontend run lint && node scripts/vet.mjs",
+    "format": "pnpm --dir frontend run format && gofmt -w backend",
+    "deploy": "node deploy/deploy.mjs"
+  }
+}

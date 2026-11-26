@@ -1,0 +1,33 @@
+name: gateway
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gatewaytest
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: gatewaytest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gatewaytest -d gatewaytest"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - run: make ui
+      - run: go test ./...
+        working-directory: backend
+        env:
+          TEST_DATABASE_URL: postgres://gatewaytest:test-password@localhost:5432/gatewaytest?sslmode=disable

@@ -1,0 +1,10 @@
+services:
+  app:
+    networks:
+      - default
+      - jimeng
+
+networks:
+  jimeng:
+    name: ${JIMENG_NETWORK:?set JIMENG_NETWORK}
+    external: true
