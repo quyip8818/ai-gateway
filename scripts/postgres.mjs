@@ -7,9 +7,10 @@ import {
   renameSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { data, root } from "./environment.mjs";
+import { processCommand } from "./processes.mjs";
 
 function postgresBin(env) {
   if (env.POSTGRES_BIN) return env.POSTGRES_BIN;
@@ -43,16 +44,66 @@ function postmasterPID(cluster) {
   }
 }
 
-function assertDatabaseStopped(cluster) {
-  const pid = Math.abs(postmasterPID(cluster) ?? 0);
-  if (!Number.isInteger(pid) || pid < 1 || pid > 0x7fff_ffff) return;
+async function stopLocalPostgres(cluster, args, pgCtl, run) {
+  const recordedPID = postmasterPID(cluster);
+  if (recordedPID === null) return;
+  const pid = Math.abs(recordedPID);
+  if (!Number.isInteger(pid) || pid < 1 || pid > 0x7fff_ffff) {
+    throw new Error(
+      `PostgreSQL PID 文件无效：${join(cluster, "postmaster.pid")}`,
+    );
+  }
   try {
     process.kill(pid, 0);
   } catch (error) {
     if (error.code === "ESRCH") return;
     throw error;
   }
-  throw new Error(`PostgreSQL 仍在运行（PID ${pid}），请先停止再重置数据库。`);
+  const command = processCommand(pid);
+  if (!command) return;
+  // Match the command used to launch this cluster before asking pg_ctl to stop it.
+  const suffix = " " + args.join(" ");
+  if (
+    recordedPID < 0 ||
+    !command.endsWith(suffix) ||
+    basename(command.slice(0, -suffix.length)) !== "postgres" ||
+    postmasterPID(cluster) !== recordedPID
+  ) {
+    throw new Error(
+      `无法确认 PID ${pid} 属于本工作区的 PostgreSQL，请先检查该进程。`,
+    );
+  }
+  await run(pgCtl, ["stop", "-D", cluster, "-m", "fast", "-w"]);
+}
+
+function installCluster(staging, cluster, reset) {
+  if (!reset || !existsSync(cluster)) {
+    renameSync(staging, cluster);
+    return;
+  }
+
+  const backup = mkdtempSync(join(dirname(cluster), "postgres-backup."));
+  const previous = join(backup, "postgres");
+  try {
+    renameSync(cluster, previous);
+    try {
+      renameSync(staging, cluster);
+    } catch (error) {
+      try {
+        renameSync(previous, cluster);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `无法安装新数据库或恢复旧数据库，旧库目录：${previous}`,
+        );
+      }
+      throw error;
+    }
+    rmSync(previous, { recursive: true });
+  } finally {
+    // Leave the old cluster available for recovery if the rollback failed.
+    if (!existsSync(previous)) rmSync(backup, { recursive: true });
+  }
 }
 
 export async function startDatabase(env, start, run, { reset = false } = {}) {
@@ -60,29 +111,7 @@ export async function startDatabase(env, start, run, { reset = false } = {}) {
   const pg = (name) => (bin ? join(bin, name) : name);
   const cluster = join(data, "postgres");
   const socket = join(data, "pg");
-  mkdirSync(socket, { recursive: true, mode: 0o700 });
-  if (reset || !existsSync(join(cluster, "PG_VERSION"))) {
-    // A replacement during initdb must never open a partially built cluster.
-    const staging = mkdtempSync(join(data, "postgres-init."));
-    try {
-      await run(pg("initdb"), [
-        "-D",
-        staging,
-        "-U",
-        "gateway",
-        "--auth-local=trust",
-        "--auth-host=scram-sha-256",
-      ]);
-      if (reset) {
-        assertDatabaseStopped(cluster);
-        rmSync(cluster, { recursive: true, force: true });
-      }
-      renameSync(staging, cluster);
-    } finally {
-      rmSync(staging, { recursive: true, force: true });
-    }
-  }
-  const server = start(pg("postgres"), [
+  const args = [
     "-D",
     cluster,
     "-k",
@@ -91,7 +120,28 @@ export async function startDatabase(env, start, run, { reset = false } = {}) {
     "5432",
     "-c",
     "listen_addresses=",
-  ]);
+  ];
+  mkdirSync(socket, { recursive: true, mode: 0o700 });
+  let staging;
+  try {
+    if (reset || !existsSync(join(cluster, "PG_VERSION"))) {
+      // A replacement during initdb must never open a partially built cluster.
+      staging = mkdtempSync(join(data, "postgres-init."));
+      await run(pg("initdb"), [
+        "-D",
+        staging,
+        "-U",
+        "gateway",
+        "--auth-local=trust",
+        "--auth-host=scram-sha-256",
+      ]);
+    }
+    await stopLocalPostgres(cluster, args, pg("pg_ctl"), run);
+    if (staging) installCluster(staging, cluster, reset);
+  } finally {
+    if (staging) rmSync(staging, { recursive: true, force: true });
+  }
+  const server = start(pg("postgres"), args);
   return {
     server,
     ready: waitForDatabase(env, start, server, pg, cluster, socket),

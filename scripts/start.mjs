@@ -17,9 +17,12 @@ import {
 } from "./environment.mjs";
 import { replaceLauncher } from "./launcher.mjs";
 import { startDatabase } from "./postgres.mjs";
+import { stopWorkspaceGateway } from "./processes.mjs";
 
 const backend = join(root, "backend");
 const frontend = join(root, "frontend");
+const binaries = join(data, "bin");
+const gatewayBinary = join(binaries, "gateway");
 const reset = process.argv[2] === "--reset";
 const children = new Set();
 const detached = process.platform !== "win32";
@@ -120,6 +123,7 @@ try {
     join(data, "launcher.sock"),
     stopChildren,
   );
+  if (!shutdown) await stopWorkspaceGateway(gatewayBinary);
   if (shutdown) throw new Error("Startup interrupted");
   if (local) {
     const postgres = await startDatabase(env, start, run, { reset });
@@ -143,7 +147,6 @@ try {
   const ui = join(backend, "internal/app/ui/dist");
   rmSync(join(ui, "assets"), { recursive: true, force: true });
   cpSync(join(frontend, "dist"), ui, { recursive: true });
-  const binaries = join(data, "bin");
   mkdirSync(binaries, { recursive: true });
   await run(
     "go",
@@ -156,7 +159,7 @@ try {
     childEnv: { ...env, BOOTSTRAP_USERNAME: username },
     input: password,
   });
-  const gateway = start(join(binaries, "gateway"), []);
+  const gateway = start(gatewayBinary, []);
   console.log(`控制台 ${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/app/`);
   const ended = await Promise.race([
     gateway.done.then((result) => ({ name: "Gateway", result })),
