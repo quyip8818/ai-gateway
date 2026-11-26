@@ -56,7 +56,6 @@ function deploy() {
         "backend/go.sum",
         "backend/cmd",
         "backend/internal",
-        "backend/migrations",
         "frontend/package.json",
         "frontend/package-lock.json",
         "frontend/index.html",

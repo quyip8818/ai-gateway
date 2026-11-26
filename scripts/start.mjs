@@ -8,7 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { data, localEnvironment, root } from "./environment.mjs";
+import {
+  bootstrapCredentials,
+  data,
+  localEnvironment,
+  readEnv,
+  root,
+} from "./environment.mjs";
 import { startDatabase } from "./postgres.mjs";
 
 const backend = join(root, "backend");
@@ -21,22 +27,40 @@ let stopping = false;
 function start(
   command,
   args,
-  { cwd = root, stdio = "inherit", detached = false } = {},
+  {
+    cwd = root,
+    stdio = "inherit",
+    detached = false,
+    input,
+    childEnv = env,
+  } = {},
 ) {
   if (stopping) throw new Error("Startup interrupted");
-  const child = spawn(command, args, { cwd, env, stdio, detached });
+  const child = spawn(command, args, {
+    cwd,
+    env: childEnv,
+    stdio: input === undefined ? stdio : ["pipe", "inherit", "inherit"],
+    detached,
+  });
   const running = { child, result: null };
   children.add(running);
   running.done = new Promise((resolve) => {
+    let inputError;
     const finish = (result) => {
       running.result = result;
       children.delete(running);
       resolve(result);
     };
     child.once("error", (error) => finish(error.message));
-    child.once("exit", (code, signal) =>
-      finish(code === 0 ? "" : (signal ?? `exit ${code}`)),
+    child.once("close", (code, signal) =>
+      finish(code === 0 ? (inputError ?? "") : (signal ?? `exit ${code}`)),
     );
+    if (input !== undefined) {
+      child.stdin.once("error", (error) => {
+        inputError = error.message;
+      });
+      child.stdin.end(input);
+    }
   });
   return running;
 }
@@ -53,7 +77,7 @@ function localSecret(name, generate) {
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
   }
-  return { path, value: readFileSync(path, "utf8").trim() };
+  return readFileSync(path, "utf8").trim();
 }
 
 function stopChildren() {
@@ -67,19 +91,18 @@ for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, stopChildren);
 
 try {
   env = localEnvironment();
+  const { username, password } = bootstrapCredentials(
+    readEnv("deploy/.env", { optional: true }),
+    { required: true },
+  );
   const local = !env.DATABASE_URL;
   env.HTTP_ADDR ||= "127.0.0.1:8088";
   env.PUBLIC_BASE_URL ||= `http://${env.HTTP_ADDR.replace(/^(?:0\.0\.0\.0|\[::\])?:/, "127.0.0.1:")}`;
   env.MEDIA_STORAGE_DIR ||= join(data, "media");
   env.JIMENG_BASE_URL ||= "http://127.0.0.1:8000";
-  env.BOOTSTRAP_USERNAME = env.BOOTSTRAP_USERNAME?.trim();
   mkdirSync(data, { recursive: true, mode: 0o700 });
   if (local) {
     database = await startDatabase(env, start, run);
-    env.BOOTSTRAP_USERNAME ||= "admin";
-    env.BOOTSTRAP_PASSWORD_FILE ||= localSecret("admin-password", () =>
-      randomBytes(24).toString("base64url"),
-    ).path;
   }
   for (const [name, file] of [
     ["KEY_DIGEST_SECRET", "key-digest"],
@@ -88,16 +111,7 @@ try {
     if (env[name] || env[`${name}_FILE`]) continue;
     if (!local)
       throw new Error(`DATABASE_URL requires ${name} or ${name}_FILE`);
-    env[name] = localSecret(file, () =>
-      randomBytes(32).toString("base64"),
-    ).value;
-  }
-  if (
-    Boolean(env.BOOTSTRAP_USERNAME) !== Boolean(env.BOOTSTRAP_PASSWORD_FILE)
-  ) {
-    throw new Error(
-      "Set both BOOTSTRAP_USERNAME and BOOTSTRAP_PASSWORD_FILE to initialize an administrator",
-    );
+    env[name] = localSecret(file, () => randomBytes(32).toString("base64"));
   }
 
   await run("npm", ["ci", "--prefer-offline", "--no-audit", "--no-fund"], {
@@ -116,12 +130,10 @@ try {
   );
   const ctl = join(binaries, "gatewayctl");
   await run(ctl, ["init-db"]);
-  if (env.BOOTSTRAP_USERNAME) {
-    await run(ctl, ["bootstrap", "--if-empty"]);
-    console.log(
-      `空库初始化用户名为 ${env.BOOTSTRAP_USERNAME}，密码文件为 ${env.BOOTSTRAP_PASSWORD_FILE}`,
-    );
-  }
+  await run(ctl, ["bootstrap"], {
+    childEnv: { ...env, BOOTSTRAP_USERNAME: username },
+    input: password,
+  });
   const gateway = start(join(binaries, "gateway"), []);
   console.log(`控制台 ${env.PUBLIC_BASE_URL.replace(/\/$/, "")}/app/`);
   const ended = await Promise.race([

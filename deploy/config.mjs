@@ -1,3 +1,5 @@
+import { bootstrapCredentials } from "../scripts/environment.mjs";
+
 function port(value, name) {
   if (!/^[1-9]\d{0,4}$/.test(value) || Number(value) > 65535) {
     throw new Error(`${name} 必须是 1 到 65535 之间的端口`);
@@ -30,8 +32,6 @@ export function deploymentConfig(values) {
     POSTGRES_PASSWORD: dbPassword = "",
     KEY_DIGEST_SECRET: key = "",
     CONNECTION_SECRET: encryption = "",
-    BOOTSTRAP_USERNAME: configuredUsername = "",
-    BOOTSTRAP_PASSWORD: password = "",
     JIMENG_NETWORK: network = "",
     JIMENG_BASE_URL: jimeng = "",
     JIMENG_DOWNLOAD_HOSTS: downloadHosts = "",
@@ -58,19 +58,7 @@ export function deploymentConfig(values) {
       );
     }
   }
-  const username = configuredUsername.trim();
-  if (
-    password &&
-    (!username ||
-      /[\s\0]/.test(username) ||
-      /[\r\n\0]/.test(password) ||
-      Buffer.byteLength(password) < 12 ||
-      Buffer.byteLength(password) > 72)
-  ) {
-    throw new Error(
-      "请填写不含空白的 BOOTSTRAP_USERNAME 和 12 至 72 字节的单行 BOOTSTRAP_PASSWORD",
-    );
-  }
+  const { username, password } = bootstrapCredentials(values);
   if (network && (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(network) || !jimeng)) {
     throw new Error(
       "配置 JIMENG_NETWORK 时，请填写有效的网络名和 JIMENG_BASE_URL",

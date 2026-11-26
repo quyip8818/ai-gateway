@@ -4,9 +4,9 @@
 
 ## 本地启动
 
-安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。首次启动可复制 `.env.example` 为根目录 `.env`，按需修改本地端口和即梦地址，然后运行 `pnpm start`。启动命令会安装前端锁定依赖、构建控制台和 Go 服务、启动本机数据库并初始化表结构。打开 `http://127.0.0.1:8088/app/`，新建本地数据库时，使用用户名 `admin` 和 `data/admin-password` 中的密码登录。管理员只在空库初始化，首次启动会输出网关 API Key，之后也可以在控制台签发 Key。按 `Ctrl+C` 停止网关和随本次启动的 PostgreSQL。
+安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。在 `deploy/.env` 中填写 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD`，然后运行 `pnpm start`。本地端口和即梦地址可在根目录 `.env` 配置。启动命令会安装前端锁定依赖、构建控制台和 Go 服务、启动本机数据库并初始化表结构。打开 `http://127.0.0.1:8088/app/`，使用 `deploy/.env` 中的用户名和密码登录。管理员只在空库创建。更改开发环境的管理员凭证后，用空库重新启动。首次创建管理员时会输出网关 API Key，之后也可以在控制台签发 Key。按 `Ctrl+C` 停止网关和随本次启动的 PostgreSQL。
 
-本地数据库使用 `data/` 下的私有 Unix socket，数据库、媒体文件和生成的密钥均保存在该目录。PostgreSQL 工具可以来自 `PATH`、Homebrew 的 `postgresql@16` 或 `POSTGRES_BIN` 指定的 `bin` 目录。启动命令读取根目录的 `.env`，进程环境变量优先。可用 `HTTP_ADDR` 和 `PUBLIC_BASE_URL` 修改监听和访问地址。若配置了 `DATABASE_URL`，启动命令连接指定的 PostgreSQL 并初始化表结构，此时需要提供固定的 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET`，也可以通过对应的 `_FILE` 变量指定密钥文件。在外部空库初始化管理员时，同时设置 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD_FILE`。
+本地数据库使用 `data/` 下的私有 Unix socket，数据库、媒体文件和生成的密钥均保存在该目录。PostgreSQL 工具可以来自 `PATH`、Homebrew 的 `postgresql@16` 或 `POSTGRES_BIN` 指定的 `bin` 目录。启动命令读取根目录的 `.env`，进程环境变量优先。可用 `HTTP_ADDR` 和 `PUBLIC_BASE_URL` 修改监听和访问地址。若配置了 `DATABASE_URL`，启动命令连接指定的 PostgreSQL 并初始化表结构，此时需要提供固定的 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET`，也可以通过对应的 `_FILE` 变量指定密钥文件。
 
 ## 代码检查与格式化
 

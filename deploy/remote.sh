@@ -86,8 +86,7 @@ fi
 compose "$release" up -d --wait --wait-timeout 90 db
 compose "$release" run --rm --no-deps -T app gatewayctl init-db
 if [[ -s "$work/.bootstrap-password" ]]; then
-  compose "$release" run --rm --no-deps -T -i -e BOOTSTRAP_PASSWORD_FILE=/dev/stdin \
-    app gatewayctl bootstrap --if-empty < "$work/.bootstrap-password"
+  compose "$release" run --rm --no-deps -T -i app gatewayctl bootstrap < "$work/.bootstrap-password"
 fi
 
 switch_started=true
