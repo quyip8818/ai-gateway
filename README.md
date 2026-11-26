@@ -29,7 +29,7 @@
 
 1. 在相邻的 `../jimeng-api` 目录按该项目配置启用获授权的账号池并启动服务。使用 `GET /ping` 检查服务是否在线，并从该服务管理台签发托管 `jm_` Key。其当前图片和异步视频 API 都使用托管 Key。
 2. `pnpm start` 默认将 `http://127.0.0.1:8000` 设为允许的即梦上游。上游使用其他地址时，将网关的 `JIMENG_BASE_URL` 改为网关进程可访问的服务根地址。用 Docker Compose 部署时填写容器可访问的上游地址。进入网关的「项目管理」，新建「即梦」连接，填写相同的服务地址和托管 Key。可用连接的「探活」检查模型目录接口是否可访问。
-3. 发布 `image.generate` 或 `video.generate` 路由并填写真实上游模型 ID。可用模型从该 `jimeng-api` 实例的 `/v1/models` 查询。发布后可在网关的「媒体任务」提交任务和查看成品。
+3. 发布 `image.generate` 或 `video.generate` 路由并填写真实上游模型 ID。可用模型从该 `jimeng-api` 实例的 `/v1/models` 查询。发布后，在网关的「产品接入 → 即梦」复制 API 调用示例，或打开「媒体工作台」提交任务和查看成品。
 
 新发布的图片路由默认使用当前即梦协议，文生图发送 `size`，参考图走 `/v1/images/edits`。例如上游 `jimeng-image-5.0-pro` 可配置 `{"aspect_ratios":["1:1"],"image_sizes":{"1:1":"1536x1536"},"input_roles":["reference_image"]}`。已有路由及恢复的历史版本继续沿用原协议。需要切换的旧图片路由，发布一个新的版本即可。兼容较旧的即梦服务时可显式设置 `"image_api":"legacy"`。
 

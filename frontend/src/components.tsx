@@ -61,3 +61,23 @@ export function Status({ value }: { value: unknown }) {
     </span>
   );
 }
+
+export function PageHeading({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children?: ReactNode;
+}) {
+  return (
+    <header className="studio-header page-heading">
+      <div>
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+      </div>
+      {children && <div className="page-actions">{children}</div>}
+    </header>
+  );
+}

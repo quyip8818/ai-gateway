@@ -1,185 +1,188 @@
-import { useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useState } from "react";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { api, projectURL, useResource } from "../api";
 import type { Job, Model, Project } from "../api";
-import { Field, Notice, Panel, Status } from "../components";
+import { Notice, PageHeading, Panel, Status } from "../components";
+import { jimeng } from "../products";
+import { MediaComposer } from "./media-composer";
 
 export function Media({ project }: { project: Project }) {
-  const [cursor, setCursor] = useState("");
+  const [params, setParams] = useSearchParams();
+  const goto = useNavigate();
+  const [submitting, setSubmitting] = useState(false);
+  const library = params.get("view") === "library";
+  const filter =
+    jimeng.operations.find((item) => item.id === params.get("filter"))?.id ??
+    "";
+  const cursor = params.get("cursor") ?? "";
   const base = projectURL(project.id) + "/media",
-    models = useResource<{ data: Model[] }>(base + "/models"),
+    models = useResource<{ data: Model[] }>(library ? null : base + "/models"),
     jobs = useResource<{ data: Job[]; next_cursor?: string }>(
-      base + "/jobs?" + new URLSearchParams({ cursor }),
-      cursor ? 0 : 3000,
+      base +
+        "/jobs?" +
+        new URLSearchParams({ cursor, operation: filter, limit: "12" }),
+      { interval: cursor ? 0 : 3000 },
     );
-  const [model, setModel] = useState(""),
-    [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    idem = useRef<{ input: string; key: string } | undefined>(undefined),
-    assetCache = useRef<{ file: File; id: string } | undefined>(undefined),
-    goto = useNavigate();
-  const choice = models.value?.data.find(
-    (x) => x.operation + "|" + x.id === model,
-  );
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!choice) return;
-    const f = new FormData(e.currentTarget);
-    setBusy(true);
-    setError("");
-    try {
-      let asset = "";
-      const file = f.get("file");
-      if (file instanceof File && file.size) {
-        if (assetCache.current?.file === file) {
-          asset = assetCache.current.id;
-        } else {
-          const body = new FormData();
-          body.set("file", file);
-          asset = (await api<{ asset_id: string }>(base + "/assets", body))
-            .asset_id;
-          assetCache.current = { file, id: asset };
-        }
-      }
-      const body = {
-        model: choice.id,
-        operation: choice.operation,
-        prompt: f.get("prompt"),
-        spec: {
-          aspect_ratio: f.get("ratio") || undefined,
-          duration_seconds: Number(f.get("duration")) || undefined,
-        },
-        inputs: asset
-          ? [
-              {
-                asset_id: asset,
-                role:
-                  choice.operation === "video.generate"
-                    ? "first_frame"
-                    : "reference_image",
-              },
-            ]
-          : undefined,
-      };
-      const raw = JSON.stringify(body);
-      if (!idem.current || idem.current.input !== raw)
-        idem.current = { input: raw, key: crypto.randomUUID() };
-      const reply = await fetch(base + "/jobs", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Gateway-CSRF": "1",
-          "Idempotency-Key": idem.current.key,
-        },
-        body: raw,
-      });
-      const data = await reply.json();
-      if (!reply.ok) throw new Error(data.error?.code ?? "提交失败");
-      idem.current = undefined;
-      goto(data.id);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+  const operation =
+    jimeng.operations.find((item) => item.id === params.get("operation"))?.id ??
+    jimeng.operations.find((item) =>
+      models.value?.data.some((model) => model.operation === item.id),
+    )?.id ??
+    jimeng.operations[0].id;
+  function updateQuery(name: string, value: string) {
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      if (value) next.set(name, value);
+      else next.delete(name);
+      if (name === "filter") next.delete("cursor");
+      return next;
+    });
   }
   return (
     <>
-      <h1>媒体任务</h1>
-      <Notice error={error || models.error || jobs.error} />
-      <div className="grid">
-        <Panel title="创建即梦任务">
-          <form onSubmit={submit}>
-            <label>
-              模型与操作
-              <select
-                required
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+      <PageHeading
+        title={library ? "媒体资源库" : "媒体工作台"}
+        description={
+          library
+            ? "浏览图片与视频任务，打开详情查看和下载成品。"
+            : "使用即梦生成图片和视频，查看任务进度并下载成品。"
+        }
+      >
+        <button
+          type="button"
+          className="secondary"
+          disabled={submitting}
+          onClick={() => updateQuery("view", library ? "" : "library")}
+        >
+          {library ? "返回创作" : "打开资源库"}
+        </button>
+        <Link
+          className="action-link"
+          to={"../?product=jimeng&operation=" + operation}
+        >
+          即梦 API 接入
+        </Link>
+      </PageHeading>
+      <Notice error={(!library && models.error) || jobs.error} />
+      <div className={library ? undefined : "grid studio-grid media-workspace"}>
+        {!library && (
+          <MediaComposer
+            base={base}
+            models={models}
+            operation={operation}
+            busy={submitting}
+            setBusy={setSubmitting}
+            admin={project.role === "admin"}
+            selectOperation={(value) => updateQuery("operation", value)}
+            onCreated={(id) =>
+              goto({ pathname: id, search: params.toString() })
+            }
+          />
+        )}
+        <Panel title="任务与成品">
+          <div
+            className="segments studio-switch"
+            role="group"
+            aria-label="筛选任务"
+          >
+            {[{ id: "", label: "全部" }, ...jimeng.operations].map((type) => (
+              <button
+                type="button"
+                key={type.id}
+                aria-pressed={filter === type.id}
+                onClick={() => updateQuery("filter", type.id)}
               >
-                <option value="">选择模型</option>
-                {models.value?.data.map((x) => (
-                  <option
-                    key={x.operation + "|" + x.id}
-                    value={x.operation + "|" + x.id}
-                  >
-                    {x.id} ·{" "}
-                    {x.operation === "video.generate" ? "视频" : "图片"}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              提示词
-              <textarea name="prompt" required rows={5} />
-            </label>
-            {!!choice?.capabilities?.aspect_ratios?.length && (
-              <label>
-                画幅
-                <select name="ratio">
-                  <option value="">使用默认值</option>
-                  {choice.capabilities.aspect_ratios.map((v) => (
-                    <option key={v}>{v}</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {!!choice?.capabilities?.duration_seconds?.length && (
-              <label>
-                时长
-                <select name="duration">
-                  <option value="">使用默认值</option>
-                  {choice.capabilities.duration_seconds.map((v) => (
-                    <option key={v} value={v}>
-                      {v} 秒
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {!!choice?.capabilities?.input_roles?.length && (
-              <Field
-                label="参考素材"
-                name="file"
-                type="file"
-                required={false}
-              />
-            )}
-            <button disabled={busy || !choice}>
-              {busy ? "正在提交…" : "提交任务"}
-            </button>
-          </form>
-        </Panel>
-        <Panel title="近期任务">
+                {type.label}
+              </button>
+            ))}
+          </div>
           {!jobs.value?.data.length ? (
-            <p>暂无任务</p>
+            <div className="studio-empty media-empty">
+              <p>
+                {jobs.value
+                  ? "这个分类还没有任务"
+                  : jobs.error
+                    ? "任务读取失败"
+                    : "正在加载任务…"}
+              </p>
+              {jobs.value && !filter && !cursor && (
+                <small>提交任务后，可在这里查看状态和成品。</small>
+              )}
+            </div>
           ) : (
-            <ul className="rows">
-              {jobs.value.data.map((j) => (
-                <li key={j.id}>
-                  <Link to={j.id}>
-                    {j.model}
-                    <small>{j.id}</small>
-                  </Link>
-                  <Status value={j.status} />
-                </li>
-              ))}
+            <ul className="media-gallery">
+              {jobs.value.data.map((job) => {
+                const video = job.operation === "video.generate";
+                const preview =
+                  job.artifacts[0] &&
+                  base + "/jobs/" + job.id + "/artifacts/" + job.artifacts[0];
+                return (
+                  <li key={job.id}>
+                    <Link to={{ pathname: job.id, search: params.toString() }}>
+                      <div className="media-preview">
+                        {preview ? (
+                          video ? (
+                            <video
+                              muted
+                              playsInline
+                              preload="metadata"
+                              src={preview + "#t=0.1"}
+                            />
+                          ) : (
+                            <img
+                              src={preview}
+                              alt="生成图片预览"
+                              loading="lazy"
+                            />
+                          )
+                        ) : (
+                          <span aria-hidden="true">{video ? "▷" : "✧"}</span>
+                        )}
+                        <span className="media-type">
+                          {video ? (preview ? "▷ 视频" : "视频") : "图片"}
+                        </span>
+                      </div>
+                      <div className="media-card-body">
+                        <strong>{job.model}</strong>
+                        <Status value={job.status} />
+                        <small>
+                          {new Date(job.created_at).toLocaleString("zh-CN", {
+                            dateStyle: "short",
+                            timeStyle: "short",
+                          })}
+                        </small>
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
             </ul>
           )}
-          {cursor && (
-            <button className="secondary" onClick={() => setCursor("")}>
-              最新任务
-            </button>
-          )}
-          {!!jobs.value?.next_cursor && (
-            <button
-              className="secondary"
-              onClick={() => setCursor(jobs.value?.next_cursor ?? "")}
-            >
-              下一页
-            </button>
-          )}
+          <div className="segments">
+            {cursor && (
+              <button
+                className="secondary"
+                onClick={() => updateQuery("cursor", "")}
+              >
+                最新任务
+              </button>
+            )}
+            {!!jobs.value?.next_cursor && (
+              <button
+                className="secondary"
+                onClick={() =>
+                  updateQuery("cursor", jobs.value?.next_cursor ?? "")
+                }
+              >
+                下一页
+              </button>
+            )}
+          </div>
         </Panel>
       </div>
     </>
@@ -187,30 +190,40 @@ export function Media({ project }: { project: Project }) {
 }
 export function JobDetail({ project }: { project: Project }) {
   const { jobId } = useParams();
+  const [params] = useSearchParams();
+  const library = params.get("view") === "library";
   const base = projectURL(project.id) + "/media/jobs/" + jobId;
-  const [poll, setPoll] = useState(2500);
-  const job = useResource<Job>(base, poll);
+  const job = useResource<Job>(base, { interval: 2500, stop: jobFinished });
   const [error, setError] = useState("");
-  useEffect(() => {
-    if (
-      job.value &&
-      (["succeeded", "failed", "canceled"].includes(job.value.status) ||
-        (job.value.status === "submit_unknown" && !job.value.recovery_pending))
-    )
-      setPoll(0);
-  }, [job.value]);
+  const [canceling, setCanceling] = useState(false);
   const data = job.value;
+  async function cancel() {
+    setCanceling(true);
+    setError("");
+    try {
+      await api(base + "/cancel", undefined, "POST");
+      job.refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCanceling(false);
+    }
+  }
   return (
     <>
-      <h1>媒体任务详情</h1>
-      <Link to="../">返回任务</Link>
+      <PageHeading title="媒体任务详情">
+        <Link
+          className="action-link"
+          to={{ pathname: "../media", search: params.toString() }}
+        >
+          {library ? "返回资源库" : "返回媒体工作台"}
+        </Link>
+      </PageHeading>
       <Notice error={error || job.error} />
       {data && (
         <Panel title={data.model}>
           <Status value={data.status} />
-          <p>
-            {data.progress !== undefined ? "进度 " + data.progress + "%" : null}
-          </p>
+          {data.progress !== undefined && <p>进度 {data.progress}%</p>}
           <Notice error={data.error?.code} />
           <p>即梦积分：{data.credits_used ?? "上游未报告"}</p>
           {data.status === "submit_unknown" && (
@@ -226,14 +239,8 @@ export function JobDetail({ project }: { project: Project }) {
             </Link>
           </p>
           {data.status === "queued" && (
-            <button
-              onClick={() =>
-                api(base + "/cancel", undefined, "POST")
-                  .then(job.refresh)
-                  .catch((e) => setError(e.message))
-              }
-            >
-              取消排队
+            <button disabled={canceling} onClick={cancel}>
+              {canceling ? "正在取消…" : "取消排队"}
             </button>
           )}
           {data.artifacts.map((id) => {
@@ -256,5 +263,12 @@ export function JobDetail({ project }: { project: Project }) {
         </Panel>
       )}
     </>
+  );
+}
+
+function jobFinished(job: Job) {
+  return (
+    ["succeeded", "failed", "canceled"].includes(job.status) ||
+    (job.status === "submit_unknown" && !job.recovery_pending)
   );
 }

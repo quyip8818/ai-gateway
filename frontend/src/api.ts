@@ -12,6 +12,7 @@ export type Model = {
   };
 };
 export type Job = {
+  created_at: string;
   credits_used?: string | null;
   recovery_pending?: boolean;
   id: string;
@@ -36,16 +37,17 @@ export async function api<T>(
   path: string,
   payload?: unknown,
   method?: string,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; headers?: Record<string, string> } = {},
 ): Promise<T> {
   const response = await fetch(path, {
-    signal,
+    signal: options.signal,
     method: method ?? (payload === undefined ? "GET" : "POST"),
     headers: {
       "X-Gateway-CSRF": "1",
       ...(payload !== undefined && !(payload instanceof FormData)
         ? { "Content-Type": "application/json" }
         : {}),
+      ...options.headers,
     },
     body:
       payload instanceof FormData
@@ -61,38 +63,61 @@ export async function api<T>(
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
-export function useResource<T>(path: string, every = 0) {
-  const [value, setValue] = useState<T>();
-  const [error, setError] = useState("");
+export function useResource<T>(
+  path: string | null,
+  {
+    interval = 0,
+    stop,
+    stopOnError = false,
+  }: {
+    interval?: number;
+    stop?: (value: T) => boolean;
+    stopOnError?: boolean;
+  } = {},
+) {
+  const [result, setResult] = useState<{
+    path: string;
+    version: number;
+    value?: T;
+    error: string;
+  }>();
   const [version, refresh] = useState(0);
   useEffect(() => {
+    if (path === null) return;
     const controller = new AbortController();
     let timer: number | undefined;
-    setValue(undefined);
-    setError("");
-    async function read() {
+    let value: T | undefined;
+    async function read(url: string) {
       try {
-        const next = await api<T>(
-          path,
-          undefined,
-          undefined,
-          controller.signal,
-        );
+        value = await api<T>(url, undefined, undefined, {
+          signal: controller.signal,
+        });
         if (controller.signal.aborted) return;
-        setValue(next);
-        setError("");
+        setResult({ path: url, version, value, error: "" });
+        if (value !== undefined && stop?.(value)) return;
       } catch (error) {
-        if (!controller.signal.aborted) setError((error as Error).message);
-      } finally {
-        if (every && !controller.signal.aborted)
-          timer = window.setTimeout(read, every);
+        if (controller.signal.aborted) return;
+        setResult({
+          path: url,
+          version,
+          value,
+          error: (error as Error).message,
+        });
+        if (stopOnError) return;
       }
+      if (interval) timer = window.setTimeout(() => void read(url), interval);
     }
-    void read();
+    void read(path);
     return () => {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [path, every, version]);
-  return { value, error, refresh: () => refresh((v) => v + 1) };
+  }, [path, interval, stop, stopOnError, version]);
+  const current =
+    result?.path === path && result.version === version ? result : undefined;
+  return {
+    value: current?.value,
+    error: current?.error ?? "",
+    refresh: () => refresh((v) => v + 1),
+  };
 }

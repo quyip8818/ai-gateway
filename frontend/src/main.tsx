@@ -13,6 +13,7 @@ import {
 import { api, consoleURL, useResource } from "./api";
 import type { Project } from "./api";
 import { Field, Notice, Panel } from "./components";
+import { Keys } from "./features/keys";
 import { Setup } from "./features/setup";
 import { Media, JobDetail } from "./features/media";
 import { RequestList, RequestDetail } from "./features/requests";
@@ -107,50 +108,49 @@ function Workspace({
   const p = projects.find((x) => x.id === id);
   if (!p) return <Navigate to={"/app/projects/" + projects[0].id} replace />;
   const root = "/app/projects/" + p.id;
-  const links = [
-    ["", "接入与密钥"],
-    ["media", "媒体任务"],
-    ["requests", "请求记录"],
-    ["usage", "用量"],
-    ...(p.role === "admin" ? [["admin", "项目管理"]] : []),
-  ];
   return (
-    <div className="shell">
-      <aside>
+    <div className="console-shell studio">
+      <header className="console-topbar">
         <div className="brand">
-          <span>↗</span> AI Gateway
+          <span aria-hidden="true">↗</span> AI Gateway
         </div>
-        <label>
-          当前项目
-          <select
-            value={p.id}
-            onChange={(e) => goto("/app/projects/" + e.target.value)}
-          >
-            {projects.map((x) => (
-              <option key={x.id} value={x.id}>
-                {x.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <nav>
-          {links.map(([path, name]) => (
-            <NavLink
-              key={name}
-              end={!path}
-              to={root + (path ? "/" + path : "")}
+        <div className="console-actions">
+          <label>
+            <span>当前项目</span>
+            <select
+              value={p.id}
+              onChange={(e) => goto("/app/projects/" + e.target.value)}
             >
-              {name}
-            </NavLink>
-          ))}
-        </nav>
-        <button className="secondary exit" onClick={logout}>
-          退出
-        </button>
-      </aside>
-      <main className="workspace" key={p.id}>
+              {projects.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button type="button" className="secondary" onClick={logout}>
+            退出登录
+          </button>
+        </div>
+      </header>
+      <nav className="console-nav" aria-label="项目导航">
+        {[
+          ["usage", "运行概览"],
+          ["", "产品接入"],
+          ["keys", "API 密钥"],
+          ["media", "媒体工作台"],
+          ["requests", "请求记录"],
+          ...(p.role === "admin" ? [["admin", "项目管理"]] : []),
+        ].map(([path, label]) => (
+          <NavLink key={label} end={!path} to={root + (path ? "/" + path : "")}>
+            {label}
+          </NavLink>
+        ))}
+      </nav>
+      <main className="console-content" key={p.id}>
         <Routes>
           <Route index element={<Setup project={p} />} />
+          <Route path="keys" element={<Keys project={p} />} />
           <Route path="media" element={<Media project={p} />} />
           <Route path="media/:jobId" element={<JobDetail project={p} />} />
           <Route path="requests" element={<RequestList project={p} />} />

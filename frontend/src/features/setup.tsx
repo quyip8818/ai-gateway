@@ -1,116 +1,98 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { api, projectURL, text, useResource } from "../api";
-import type { Key, Model, Project, Row } from "../api";
-import { Field, Notice, Panel, Status } from "../components";
+import { useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { projectURL, useResource } from "../api";
+import type { Model, Project } from "../api";
+import { Notice, PageHeading, Panel } from "../components";
+import { products } from "../products";
+import { SetupCheck } from "./setup-check";
+import { setupSnippet } from "./setup-snippet";
 
 export function Setup({ project }: { project: Project }) {
-  const base = projectURL(project.id),
-    keys = useResource<{ data: Key[] }>(base + "/keys"),
-    models = useResource<{ data: Model[] }>(base + "/models");
-  const [op, setOp] = useState("responses"),
-    [model, selectModel] = useState(""),
-    [key, selectKey] = useState(""),
-    [checkID, setCheckID] = useState(""),
-    [secret, setSecret] = useState(""),
-    [error, setError] = useState(""),
-    [check, setCheck] = useState<Row>();
+  const base = projectURL(project.id);
+  const models = useResource<{ data: Model[] }>(base + "/models");
+  const [params, setParams] = useSearchParams();
+  const product =
+    products.find((item) => item.id === params.get("product")) ?? products[0];
+  const operation =
+    product.operations.find((item) => item.id === params.get("operation")) ??
+    product.operations[0];
+  const op = operation.id;
+  const isMedia = product.protocol === "media";
+  const workspace = isMedia ? product.workspace + "?operation=" + op : "";
+  const adminPath = "admin?operation=" + op;
+  const keysPath =
+    "keys?" + new URLSearchParams({ product: product.id, operation: op });
+  const [selection, setSelection] = useState({ operation: "", model: "" });
+  const [error, setError] = useState("");
+  const model = selection.operation === op ? selection.model : "";
   const available = models.value?.data.filter((x) => x.operation === op) ?? [];
   const modelID = available.some((x) => x.id === model)
     ? model
     : (available[0]?.id ?? "");
-  useEffect(() => {
-    if (!checkID) return;
-    let active = true;
-    const run = () =>
-      api<Row>(base + "/setup/checks/" + checkID)
-        .then((value) => {
-          if (active) setCheck(value);
-        })
-        .catch((e) => {
-          if (active) {
-            setError(e.message);
-            setCheckID("");
-          }
-        });
-    void run();
-    const timer = setInterval(run, 2500);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, [base, checkID]);
-  async function startCheck() {
-    setError("");
-    setCheck(undefined);
-    try {
-      const result = await api<{ id: string }>(base + "/setup/checks", {
-        key_id: key,
-        model: modelID,
-        operation: op,
-      });
-      setCheckID(result.id);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  const config =
-    op === "responses"
-      ? `model_provider = "team-gateway"\nmodel = ${JSON.stringify(modelID)}\n\n[model_providers.team-gateway]\nname = "AI Gateway"\nbase_url = "${location.origin}/openai/v1"\nenv_key = "GATEWAY_KEY"\nwire_api = "responses"\nsupports_websockets = false`
-      : `export ANTHROPIC_BASE_URL="${location.origin}/anthropic"\nexport ANTHROPIC_AUTH_TOKEN="$GATEWAY_KEY"${modelID ? "\nexport ANTHROPIC_MODEL=" + JSON.stringify(modelID) : ""}`;
-  const action = async (path: string, body?: unknown) => {
-    try {
-      setError("");
-      const x = await api<{ key?: string; id?: string }>(
-        base + path,
-        body,
-        "POST",
-      );
-      if (x?.key) {
-        setSecret(x.key);
-        selectKey(x.id ?? "");
-      }
-      keys.refresh();
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
+  const snippet = modelID
+    ? setupSnippet(product.protocol, location.origin, op, modelID)
+    : "";
   return (
     <>
-      <h1>接入工作区</h1>
-      <p className="muted">配置客户端并确认第一条模型请求。</p>
-      <Notice error={error || keys.error || models.error} />
-      <div className="grid">
-        <Panel title="客户端配置">
-          <div className="segments">
-            <button
-              className={op === "responses" ? "" : "secondary"}
-              onClick={() => {
-                setOp("responses");
-                setCheckID("");
-                setCheck(undefined);
-              }}
+      <PageHeading
+        title="产品接入"
+        description="选择产品、配置模型并发送第一条请求。"
+      >
+        <Link className="action-link" to={keysPath}>
+          管理 API 密钥
+        </Link>
+      </PageHeading>
+      <Notice error={error || models.error} />
+      <div className="client-picker" role="group" aria-label="接入方式">
+        {products.map((item) => (
+          <button
+            type="button"
+            key={item.id}
+            aria-pressed={product.id === item.id}
+            onClick={() => {
+              setParams({ product: item.id });
+              setError("");
+            }}
+          >
+            <span className="client-icon" aria-hidden="true">
+              {item.icon}
+            </span>
+            <span>
+              <strong>{item.name}</strong>
+              <small>{item.description}</small>
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="grid studio-grid">
+        <Panel title={isMedia ? product.name + " API 配置" : "客户端配置"}>
+          {product.operations.length > 1 && (
+            <div
+              className="segments studio-switch"
+              role="group"
+              aria-label="生成类型"
             >
-              Codex
-            </button>
-            <button
-              className={op === "messages" ? "" : "secondary"}
-              onClick={() => {
-                setOp("messages");
-                setCheckID("");
-                setCheck(undefined);
-              }}
-            >
-              Claude Code
-            </button>
-          </div>
+              {product.operations.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  aria-pressed={op === item.id}
+                  onClick={() => {
+                    setParams({ product: product.id, operation: item.id });
+                    setError("");
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
           <label>
             模型
             <select
               value={modelID}
               onChange={(e) => {
-                selectModel(e.target.value);
-                setCheckID("");
+                setSelection({ operation: op, model: e.target.value });
               }}
             >
               <option value="" disabled>
@@ -123,107 +105,91 @@ export function Setup({ project }: { project: Project }) {
           </label>
           {modelID ? (
             <>
-              <pre>{config}</pre>
+              {isMedia && (
+                <p className="muted">
+                  用网关 API 密钥设置 <code>GATEWAY_KEY</code>
+                  ，并为本次任务设置唯一的 <code>JOB_KEY</code>
+                  。提交后携带同一密钥请求{" "}
+                  <code>GET /media/v1/jobs/任务ID</code> 查看状态。
+                </p>
+              )}
+              <pre>{snippet}</pre>
               <button
                 className="secondary"
-                onClick={() =>
-                  navigator.clipboard
-                    .writeText(config)
-                    .catch(() => setError("复制失败，请手动复制"))
-                }
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(snippet);
+                    setError("");
+                  } catch {
+                    setError("复制失败，请手动复制");
+                  }
+                }}
               >
-                复制配置
+                {isMedia ? "复制命令" : "复制配置"}
               </button>
             </>
           ) : (
-            <p>请先发布此客户端可用的模型路由。</p>
-          )}
-          <label>
-            验证使用的密钥
-            <select
-              value={key}
-              onChange={(e) => {
-                selectKey(e.target.value);
-                setCheckID("");
-              }}
-            >
-              <option value="">选择密钥</option>
-              {keys.value?.data
-                .filter((x) => !x.revoked_at)
-                .map((x) => (
-                  <option value={x.id} key={x.id}>
-                    {x.label}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <button disabled={!modelID || !key} onClick={startCheck}>
-            开始验证
-          </button>
-          {checkID && (
-            <p>
-              使用该配置发送生成请求。{" "}
-              <Status value={check?.status ?? "waiting"} />
-              {Boolean(check?.id) && (
-                <Link to={"requests/" + text(check?.id)}> 查看请求</Link>
+            <div className="studio-empty">
+              {models.value ? (
+                <>
+                  <p>
+                    {isMedia
+                      ? "尚未发布" +
+                        product.name +
+                        "的" +
+                        operation.label +
+                        "模型。"
+                      : "尚未发布此客户端可用的模型路由。"}
+                  </p>
+                  {project.role === "admin" ? (
+                    <Link to={adminPath}>为{product.name}配置路由 →</Link>
+                  ) : (
+                    <p>请联系项目管理员发布路由。</p>
+                  )}
+                </>
+              ) : (
+                <p>{models.error ? "模型目录读取失败" : "正在加载模型…"}</p>
               )}
-            </p>
-          )}
-        </Panel>
-        <Panel title="API 密钥">
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = e.currentTarget;
-              void action("/keys", Object.fromEntries(new FormData(f)));
-              f.reset();
-            }}
-          >
-            <Field name="label" label="密钥名称" />
-            <button>创建密钥</button>
-          </form>
-          {secret && (
-            <div className="warning">
-              本密钥只显示一次。<pre>{secret}</pre>
-              <button className="secondary" onClick={() => setSecret("")}>
-                关闭
-              </button>
             </div>
           )}
-          <ul className="rows">
-            {keys.value?.data.map((x) => (
-              <li key={x.id}>
-                <div>
-                  {x.label}
-                  <small>
-                    {x.prefix} · {x.revoked_at ? "已撤销" : "启用"}
-                  </small>
-                </div>
-                {!x.revoked_at && (
-                  <div className="segments">
-                    <button
-                      className="secondary"
-                      onClick={() => {
-                        if (confirm("轮换会立即撤销旧密钥，继续？"))
-                          void action("/keys/" + x.id + "/rotate");
-                      }}
-                    >
-                      轮换
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => {
-                        if (confirm("撤销此密钥？"))
-                          void action("/keys/" + x.id + "/revoke");
-                      }}
-                    >
-                      撤销
-                    </button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
+          {isMedia ? (
+            <Link className="studio-cta" to={workspace}>
+              打开{product.name}创作 →
+            </Link>
+          ) : (
+            <SetupCheck key={op} base={base} operation={op} model={modelID} />
+          )}
+        </Panel>
+        <Panel title="接入步骤">
+          <ol className="setup-steps">
+            <li>
+              <strong>准备模型路由</strong>
+              <small>
+                {available.length
+                  ? "当前可用模型 " + available.length + " 个"
+                  : "由管理员启用上游连接并发布模型。"}
+              </small>
+              {project.role === "admin" && (
+                <Link to={adminPath}>管理连接和路由 →</Link>
+              )}
+            </li>
+            <li>
+              <strong>准备项目密钥</strong>
+              <small>在外部客户端使用网关签发的 API 密钥。</small>
+              <Link to={keysPath}>查看或创建密钥 →</Link>
+            </li>
+            <li>
+              <strong>发送请求并查看结果</strong>
+              <small>
+                {isMedia
+                  ? "在媒体工作台查看生成状态和成品。"
+                  : "发送一条模型请求，或在请求记录中按 ID 排查。"}
+              </small>
+              <Link to={workspace || "requests"}>
+                {isMedia ? "媒体工作台" : "请求记录"} →
+              </Link>
+            </li>
+          </ol>
         </Panel>
       </div>
     </>
