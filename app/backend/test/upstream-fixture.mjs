@@ -7,6 +7,7 @@ import { crc32 } from '../../../dist/providers/kiro/kiro/event-stream.js';
 
 const originalFetch = globalThis.fetch;
 const png = Buffer.from('89504e470d0a1a0a', 'hex');
+const renderedPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1ikAAAAASUVORK5CYII=', 'base64');
 export const jimengCaptures = [];
 let imageCreditRecord;
 let imageCreditLookups = 0;
@@ -189,7 +190,7 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
   axios.defaults.adapter = async (config) => {
     const url = new URL(config.url);
     let data;
-    if (url.hostname === 'cdn.fixture.test') data = url.pathname === '/video' ? video : png;
+    if (url.hostname === 'cdn.fixture.test') data = url.pathname === '/video' ? video : renderedPng;
     else if (url.hostname === 'imagex.bytedanceapi.com') {
       if (url.searchParams.get('Action') === 'ApplyImageUpload') {
         data = {
@@ -282,7 +283,12 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
             status: 50,
             item_list: q.image_info
               ? [{ image: { large_images: [{ image_url: 'https://cdn.fixture.test/image' }] } }]
-              : [{ video: { play_url: 'https://cdn.fixture.test/video' } }],
+              : [{
+                video: {
+                  transcoded_video: { origin: { video_url: 'https://cdn.fixture.test/video', width: 704, height: 1252 } },
+                  width: 640, height: 1138, duration_ms: 5017,
+                },
+              }],
           },
         };
         if (id === recastSource) {

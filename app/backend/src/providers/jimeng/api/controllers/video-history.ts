@@ -1,12 +1,12 @@
+import type { VideoOutput } from "../../../../../../../shared/contracts/media.ts";
 import { isVideoMediaUrl } from "../../lib/media-url.ts";
 
 type HistoryObject = Record<string, unknown>;
-type VideoOutput = { width?: number; height?: number; durationMs?: number };
 
 export type VideoHistoryResult =
   | { state: "pending"; status?: number }
   | { state: "failed"; status?: number; failCode?: string }
-  | { state: "ready"; url: string };
+  | { state: "ready"; url: string; output: VideoOutput | null };
 
 const failedStatuses = new Set([10, 30, 40, 100]);
 
@@ -27,7 +27,12 @@ function positiveNumber(value: unknown) {
   return Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
-function completedVideo(items: unknown): { url: string; output: VideoOutput } | undefined {
+function pixelCount(value: unknown) {
+  const pixels = positiveNumber(value);
+  return Number.isSafeInteger(pixels) ? pixels : undefined;
+}
+
+function completedVideo(items: unknown): Extract<VideoHistoryResult, { state: "ready" }> | undefined {
   if (!Array.isArray(items)) return;
   for (const entry of items) {
     const item = object(entry);
@@ -36,22 +41,19 @@ function completedVideo(items: unknown): { url: string; output: VideoOutput } | 
 
     const origin = object(object(video.transcoded_video)?.origin);
     const covers = [video.cover_url, object(item?.common_attr)?.cover_url];
-    for (const candidate of [origin?.video_url, video.play_url, video.download_url, video.url]) {
-      if (!isVideoMediaUrl(candidate) || covers.includes(candidate)) continue;
-      return {
-        url: candidate,
-        output: {
-          width: positiveNumber(origin?.width) ?? positiveNumber(video.width),
-          height: positiveNumber(origin?.height) ?? positiveNumber(video.height),
-          durationMs: positiveNumber(video.duration_ms),
-        },
-      };
-    }
+    const url = [origin?.video_url, video.play_url, video.download_url, video.url]
+      .find((candidate): candidate is string => isVideoMediaUrl(candidate) && !covers.includes(candidate));
+    if (!url) continue;
+    const rendition = url === origin?.video_url ? origin : undefined;
+    const width = pixelCount(rendition?.width) ?? pixelCount(video.width) ?? null;
+    const height = pixelCount(rendition?.height) ?? pixelCount(video.height) ?? null;
+    const duration_ms = positiveNumber(rendition?.duration_ms) ?? positiveNumber(video.duration_ms) ?? null;
+    return { state: "ready", url, output: width || height || duration_ms ? { width, height, duration_ms } : null };
   }
 }
 
 export function inspectVideoHistory(response: unknown, historyId: string):
-  { record?: HistoryObject; result: VideoHistoryResult; output?: VideoOutput } {
+  { record?: HistoryObject; result: VideoHistoryResult } {
   const record = findVideoHistoryRecord(response, historyId);
   const rawStatus = record?.status;
   if (typeof rawStatus !== "number" && (typeof rawStatus !== "string" || !rawStatus.trim())) {
@@ -67,7 +69,7 @@ export function inspectVideoHistory(response: unknown, historyId: string):
   }
   if (status === 50) {
     const video = completedVideo(record?.item_list);
-    if (video) return { record, result: { state: "ready", url: video.url }, output: video.output };
+    if (video) return { record, result: video };
   }
   return { record, result: { state: "pending", status } };
 }

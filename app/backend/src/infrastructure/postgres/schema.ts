@@ -1,7 +1,7 @@
 import pg from 'pg';
 import schema from './initial.sql';
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const SCHEMA_LOCK = 'SELECT pg_advisory_xact_lock(683191340)';
 

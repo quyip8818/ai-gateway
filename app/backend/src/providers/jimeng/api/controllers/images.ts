@@ -568,7 +568,7 @@ export async function generateImages(
     }
   }
 
-  if (retryCount >= MAX_POLL_RETRIES) {
+  if (retryCount >= MAX_POLL_RETRIES && PROCESSING_STATES.includes(status) && item_list.length === 0) {
     throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "图像生成超时");
   }
 
@@ -582,7 +582,7 @@ export async function generateImages(
   const urls = item_list.slice(0, n)
     .map((item) => item?.image?.large_images?.[0]?.image_url || item?.common_attr?.cover_url)
     .filter((url): url is string => typeof url === "string" && url.length > 0);
-  return { urls, submitId };
+  return { urls, submitId, resolution: resolutionType };
 }
 
 /**

@@ -46,7 +46,7 @@ CREATE TABLE video_jobs (
   operation text NOT NULL CHECK(operation IN ('generate','recast')), idempotency_key text, input_hash bytea NOT NULL,
   status text NOT NULL CHECK(status IN ('queued','submitting','submission_unknown','in_progress','completed','failed')),
   history_id text, source_id uuid, upstream_source_id text, progress integer NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
-  size text, seconds text, error_code text, run_after timestamptz NOT NULL DEFAULT now(),
+  size text, seconds text, output jsonb, error_code text, run_after timestamptz NOT NULL DEFAULT now(),
   lease_until timestamptz, lease_version bigint NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz,
   UNIQUE(owner_id,id),

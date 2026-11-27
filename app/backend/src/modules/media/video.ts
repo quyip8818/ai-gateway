@@ -6,6 +6,9 @@ import type { Files } from '../../infrastructure/files/storage.ts';
 import { jimengVideos as provider, jimengMediaFiles } from '../../providers/registry.ts';
 
 export function publicVideo(job) {
+  const resolution = job.operation === 'recast'
+    ? provider.recastSpec(job.upstream_model)?.resolution
+    : job.size && provider.parseSize(job.size)?.resolution;
   return {
     id: 'video_' + job.id,
     object: 'video',
@@ -14,6 +17,8 @@ export function publicVideo(job) {
     progress: job.progress,
     size: job.size,
     seconds: job.seconds,
+    resolution: resolution ?? null,
+    output: job.output,
     created_at: Math.floor(new Date(job.created_at).getTime() / 1000),
     completed_at: job.completed_at ? Math.floor(new Date(job.completed_at).getTime() / 1000) : null,
     remixed_from_video_id: job.source_id ? 'video_' + job.source_id : null,
@@ -75,11 +80,11 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       throw new AppError(400, 'invalid_video_dimensions');
     }
     if (source && source.status !== 'completed') throw new AppError(409, 'source_not_ready');
-    const recastDuration = provider.recastDuration(publicModel.slice(7));
-    if ((recastDuration !== undefined) !== (operation === 'recast')) throw new AppError(400, 'invalid_video_model');
+    const recast = provider.recastSpec(publicModel.slice(7));
+    if (Boolean(recast) !== (operation === 'recast')) throw new AppError(400, 'invalid_video_model');
     const target = await accounts.select(key, publicModel, 'video', source?.account_id ?? null, false);
     let resolution, ratio, seconds, size;
-    if (recastDuration === undefined) {
+    if (!recast) {
       const signal = AbortSignal.timeout(30_000);
       const { account, credential } = await accounts.credentialSnapshot(target.id, signal);
       const config = await accounts.withProviderSettings(account, signal, () =>
@@ -96,7 +101,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       }
       size = body.size ?? provider.size(16, 9, resolution === '4k' ? 2160 : Number.parseInt(resolution));
     } else {
-      seconds = recastDuration;
+      seconds = recast.seconds;
     }
     let reference;
     if (url !== undefined) {
@@ -175,7 +180,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
           AbortSignal.any([signal, AbortSignal.timeout(40_000)]),
         );
         if (bytes.toString('ascii', 4, 8) !== 'ftyp') throw new Error('Unexpected video content');
-        await store.completeVideo(job, bytes.length, () => files.write(job.id, bytes));
+        await store.completeVideo(job, bytes.length, state.output, () => files.write(job.id, bytes));
         return;
       }
       await update(

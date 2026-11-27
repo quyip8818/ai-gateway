@@ -362,7 +362,11 @@ test(
       size: '1536x1024',
       response_format: 'b64_json',
     });
-    assert.equal(Buffer.from(image.data[0].b64_json, 'base64').toString('hex'), '89504e470d0a1a0a');
+    const imageBytes = Buffer.from(image.data[0].b64_json, 'base64');
+    assert.equal(imageBytes.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+    assert.equal(image.resolution, '2k');
+    assert.equal(image.data[0].width, 1);
+    assert.equal(image.data[0].height, 1);
     assert.deepEqual(image.usage, { credits_used: 6 });
     const billingLines = server.output().split('\n');
     assert.equal(billingLines.filter((line) => line === '[fixture jimeng ledger request]').length, 1);
@@ -383,7 +387,9 @@ test(
     const download = await fetch(edited.data[0].url);
     assert.deepEqual(edited.usage, { credits_used: null });
     assert.equal(download.status, 200);
-    assert.equal(Buffer.from(await download.arrayBuffer()).toString('base64'), 'iVBORw0KGgo=');
+    assert.deepEqual(Buffer.from(await download.arrayBuffer()), imageBytes);
+    assert.equal(edited.data[0].width, 1);
+    assert.equal(edited.data[0].height, 1);
     const form = new FormData();
     form.set('prompt', 'fixture edit');
     form.set('response_format', 'b64_json');
@@ -395,7 +401,7 @@ test(
     });
     assert.equal(multipartEdit.status, 200);
     const multipartImage = await multipartEdit.json();
-    assert.equal(multipartImage.data[0].b64_json, 'iVBORw0KGgo=');
+    assert.equal(multipartImage.data[0].b64_json, image.data[0].b64_json);
     assert.deepEqual(multipartImage.usage, { credits_used: null });
     assert.equal(server.output().split('\n').filter((line) => line === '[fixture jimeng ledger request]').length, 3);
     const invalidURL = new URL(edited.data[0].url);
@@ -410,7 +416,7 @@ test(
     assert.equal(images.items[0].provider, 'jimeng');
     assert.equal(images.items[0].model, 'jimeng/jimeng-image-5.0-lite');
     assert.equal(images.items[0].type, 'image');
-    assert.equal(images.items[0].bytes, 8);
+    assert.equal(images.items[0].bytes, imageBytes.length);
     const pageTwo = await json(mediaPage + '?type=image&page=2&limit=1', admin);
     assert.notEqual(pageTwo.items[0].id, images.items[0].id);
     assert.equal((await json(mediaPage + '?provider=kiro', admin)).total, 0);
@@ -420,7 +426,7 @@ test(
     await json(adminImage, key, undefined, 401);
     const attachment = await http(adminImage + '?download=1', admin);
     assert.match(attachment.headers.get('content-disposition'), /attachment; filename=".*\.png"/);
-    assert.equal((await attachment.arrayBuffer()).byteLength, 8);
+    assert.equal((await attachment.arrayBuffer()).byteLength, imageBytes.length);
 
     const body = { prompt: 'fixture lost submission', size: '720x1280', seconds: 5 };
     const headers = { 'idempotency-key': 'same-operation' };
@@ -429,6 +435,8 @@ test(
       json('/v1/videos', key, body, 200, headers),
     ]);
     assert.equal(duplicate.id, first.id);
+    assert.equal(first.resolution, '720p');
+    assert.equal(first.output, null);
     const recast = await json('/v1/videos/edits', key, {
       prompt: 'fixture recast',
       video: { upstream_id: '11111111-1111-1111-1111-111111111111' },
@@ -463,6 +471,10 @@ test(
       assert.fail('Video did not complete: ' + id + '\n' + server.output());
     }
     const current = await waitForCompletedVideo(first.id);
+    assert.equal(current.size, '720x1280');
+    assert.equal(current.seconds, '5');
+    assert.equal(current.resolution, '720p');
+    assert.deepEqual(current.output, { width: 704, height: 1252, duration_ms: 5017 });
     assert.equal((await readFile(submissions, 'utf8')).trim(), first.id.slice(6));
     const content = await http('/v1/videos/' + first.id + '/content', key);
     assert.equal(Buffer.from(await content.arrayBuffer()).toString('ascii', 4, 8), 'ftyp');
@@ -483,7 +495,7 @@ test(
     assert.equal(unsatisfiable.status, 416);
     assert.match(unsatisfiable.headers.get('content-range'), /^bytes \*\/[0-9]+$/);
     await unsatisfiable.arrayBuffer();
-    await waitForCompletedVideo(recast.id);
+    assert.equal((await waitForCompletedVideo(recast.id)).resolution, '480p');
     const videos = await json(mediaPage + '?type=video', admin);
     assert.equal(videos.total, 2);
     assert.equal(videos.items.find(({ id }) => id === first.id.slice(6)).model, current.model);
@@ -539,7 +551,7 @@ test(
     assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
-    for (const version of [3, 4, 5, 6, 7, 99]) {
+    for (const version of [3, 4, 5, 6, 7, 8, 99]) {
       await db.query(`UPDATE ${schema}.gateway_schema SET version=$1`, [version]);
       server = start();
       const [exitCode] = await server.closed;

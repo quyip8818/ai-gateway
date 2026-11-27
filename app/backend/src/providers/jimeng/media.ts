@@ -19,22 +19,22 @@ export const jimengImages = {
   size: openAIImageSize,
   async generate(model: string, prompt: string, options: Parameters<typeof generateImagesWithRetry>[2], token: string, signal: AbortSignal) {
     return withJimengRequest(signal, async () => {
-      const { urls, submitId } = await generateImagesWithRetry(model, prompt, options, token);
+      const { urls, submitId, resolution } = await generateImagesWithRetry(model, prompt, options, token);
       const usage = readImageCredits(token, submitId).then((credits_used) => {
         const credit_receipt = { submit_id: submitId, credits_used };
         console.info('[jimeng image credits ledger]', JSON.stringify(credit_receipt));
         return { credit_receipt };
       });
-      return { urls, usage };
+      return { urls, resolution, usage };
     });
   },
 };
 
 export const jimengVideos = {
   defaultRecastModel: DEFAULT_VIDEO_RECAST_MODEL,
-  recastDuration(model: string) {
+  recastSpec(model: string) {
     const preset = VIDEO_RECAST_MODELS.get(model);
-    return preset?.sourceDurationMs === undefined ? undefined : preset.sourceDurationMs / 1000;
+    if (preset) return { seconds: preset.sourceDurationMs / 1000, resolution: preset.resolution };
   },
   size: videoSize,
   parseSize: videoSizeSpec,
@@ -77,8 +77,7 @@ export const jimengVideos = {
       { data, signal, timeout: 15_000 }, { retry: false, logPayload: false },
     ));
     const { result, record } = inspectVideoHistory(response, history ?? id);
-    if (result.state === 'ready') return { state: 'ready' as const, url: result.url };
-    if (result.state === 'failed') return { state: 'failed' as const };
+    if (result.state !== 'pending') return result;
     return { state: 'pending' as const, progress: describeVideoTaskProgress(result, record).percent };
   },
   terminalError(error: unknown) {

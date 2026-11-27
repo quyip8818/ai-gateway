@@ -30,6 +30,8 @@ Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器�
 
 即梦图片生成和编辑响应包含扩展字段 `usage.credits_used`。网关在生成后查询一次近期消费流水，按 `submit_id` 匹配该任务的已结算扣点。流水尚未确认、未出现在第一页或查询失败时，API 返回 `null`，请求记录显示「—」。
 
+图片响应的 `resolution` 是生成档位，每个 `data` 项的 `width`、`height` 来自下载的图片文件。视频响应的 `size`、`seconds` 和 `resolution` 是任务规格，完成后的 `output` 包含即梦返回的成品 `width`、`height` 和 `duration_ms`。无法确认的成品规格返回 `null`。
+
 ## 供应商配置和媒体资源
 
 - 在「上游账号 → 即梦」配置浏览器传输默认值，单个账号可在「账号设置」中覆盖或恢复继承。生效顺序为账号覆盖、供应商默认值、`JIMENG_BROWSER_TRANSPORT`、内置默认值。各实例在后续请求中读取 PostgreSQL 中的配置。

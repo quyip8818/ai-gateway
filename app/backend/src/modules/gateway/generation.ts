@@ -6,7 +6,7 @@ import { finished } from 'node:stream/promises';
 import { monitorSSE } from './sse.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { AppError } from '../../domain.ts';
-import { imageMime } from '../media/image-content.ts';
+import { imageDimensions, imageMime } from '../media/image-content.ts';
 import { invokeText, jimengImages, jimengMediaFiles, validateTextInput } from '../../providers/registry.ts';
 
 type TextDelivery = { status: number; retryAfter: string | null } & (
@@ -136,7 +136,7 @@ export function generation(
     const model = input.model ?? 'jimeng/jimeng-image-5.0-lite';
     return attempt(key, model, 'image', async (account) => {
       const { account: current, credential } = await accounts.credentialSnapshot(account.id, signal);
-      const { urls, usage } = await accounts.withProviderSettings(current, signal, () => jimengImages.generate(
+      const { urls, resolution, usage } = await accounts.withProviderSettings(current, signal, () => jimengImages.generate(
         account.upstream_id, input.prompt, { size, n, filePaths: references }, credential.token, signal,
       ));
 
@@ -147,13 +147,13 @@ export function generation(
           const bytes = await jimengMediaFiles.downloadImage(url, 24 * 1024 * 1024, signal);
           const mime = imageMime(bytes);
           if (!mime) throw new AppError(502, 'invalid_media_content');
+          const dimensions = imageDimensions(bytes, mime);
           const id = await media.save(key.id, model, mime, bytes);
-          data.push(
-            format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) },
-          );
+          const content = format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) };
+          data.push({ ...content, width: dimensions?.width ?? null, height: dimensions?.height ?? null });
         }
         const { credit_receipt } = await usage;
-        return { created: Math.floor(Date.now() / 1000), data, usage: { credits_used: credit_receipt.credits_used } };
+        return { created: Math.floor(Date.now() / 1000), resolution, data, usage: { credits_used: credit_receipt.credits_used } };
       }
 
       return { value: deliver(), usage };
