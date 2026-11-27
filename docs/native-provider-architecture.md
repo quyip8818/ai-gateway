@@ -2,7 +2,7 @@
 
 ## 1. 产品与部署
 
-**ai-gateway 是一个模块化反代应用。** 用户在控制台添加供应商账号、授权账号池、签发调用 Key，然后通过标准协议调用模型。首发包含即梦图片与视频、Codex Responses、Kiro Messages 和 Claude Messages。
+**ai-gateway 是一个模块化反代应用。** 用户在控制台添加供应商账号、为调用 Key 选择产品并签发，然后通过标准协议调用模型。首发包含即梦图片与视频、Codex Responses、Kiro Messages 和 Claude Messages。
 
 应用采用 Node.js 24、TypeScript、Koa、React 和 PostgreSQL。以本地 `jimeng-api` 的原生实现作为第一个供应商模块，同进程加载 Codex、Kiro、Claude。各模块直接访问供应商上游。发布一份镜像、一个 HTTP 入口和一个应用进程。即梦所需的 Chromium 随镜像提供，API 和视频任务循环由同一入口管理。PostgreSQL 与媒体卷承担持久化。
 
@@ -70,7 +70,7 @@ apps/
   console/           React 控制台
 packages/
   identity/          管理会话、调用 Key 与权限
-  accounts/          账号池、凭证、授权流程、调度和租约
+  accounts/          产品账号、凭证、授权流程、调度和租约
   catalog/           模型发现、公开别名、操作和能力
   gateway/           文本调用编排、尝试记录与流生命周期
   media/             图片交付、视频任务、素材与制品授权
@@ -118,20 +118,20 @@ packages/
 | `POST /v1/messages`、`POST /v1/messages/count_tokens` | Kiro 与 Claude Messages。仅为实现并验收过计数的模型开放 count_tokens。 |
 | `POST /v1/images/generations`、`POST /v1/images/edits` | 同步图片生成和参考图编辑，按模型验证输入，支持 URL 或 Base64。 |
 | `POST /v1/videos`、`GET /v1/videos/:id`、`GET /v1/videos/:id/content`、`POST /v1/videos/edits` | 即梦视频创建、查询、下载和复刻，视频 ID 和任务状态由新服务管理。 |
-| `/admin/v1/*` | 新控制台管理账号授权、账号池、模型、调用 Key、请求记录和媒体。 |
+| `/admin/v1/*` | 新控制台管理产品账号、模型、调用 Key、请求记录和媒体。 |
 | `/livez`、`/readyz` | 进程健康与本地依赖就绪。供应商账号的状态单独显示。 |
 
 首发媒体有一个视频任务入口。控制台使用同一个领域服务生成和查询视频，相册读取同一批制品。图片采用同步的标准 API，后台任务循环专门处理已提交的视频恢复、轮询和交付。即梦聊天包装可继续参考本地源码，有需要时作为明确的新协议功能加入。
 
 ## 5. 新 PostgreSQL 数据模型
 
-空库从 [initial.sql](../native/src/db/initial.sql) 初始化，版本记录在 `gateway_schema`。每个实例由一个管理员管理。调用权限由 API Key 及其授权的账号池和操作决定。媒体资源按调用 Key 归属。
+空库从 [initial.sql](../native/src/db/initial.sql) 初始化，版本记录在 `gateway_schema`。每个实例由一个管理员管理。调用权限由 API Key 的授权产品和操作决定。同一产品下的账号参与调度。媒体资源按调用 Key 归属。
 
 | 表 | 职责与主要字段 |
 | --- | --- |
 | `admin_sessions` | 管理员用用户名和密码登录后建立限时 Cookie 会话。 |
-| `api_keys`、`api_key_pool_grants` | Key 摘要、前缀、操作范围、到期及撤销、获授权的账号池。 |
-| `account_pools`、`provider_accounts` | 按供应商管理账号池。账号记录授权类型、凭证密文及版本、到期、冷却、是否启用和容量。管理接口只读去敏状态。 |
+| `api_keys` | Key 摘要、前缀、操作范围、到期、撤销和授权产品。 |
+| `provider_accounts` | 账号通过 `provider` 区分产品。记录授权类型、凭证密文及版本、到期、冷却、启用状态和内部调度容量。 |
 | `account_models` | 按账号保存公开模型 ID、上游模型 ID、操作和能力。 |
 | `authorization_flows`、`account_leases` | OAuth 流程状态、加密 verifier、超时和一次性消费；账号并发及凭证刷新租约。 |
 | `request_attempts` | 保存文本与图片的上游尝试、状态和可用的用量记录。视频生命周期由 `video_jobs` 记录。 |
@@ -153,7 +153,7 @@ packages/
 | 2. 内置即梦 | 固化本地即梦源码快照，接入原生账号和模型目录，完成图片、视频、复刻、轮询与成品 | 对比直接运行原即梦源码和新应用的上游路径、模型请求键、生成参数、素材顺序和结果解析。重启后可继续查询已提交的视频 |
 | 3. 内置 Codex 和 Claude | 接入 Codex OAuth transport 与续期、新建 Claude Messages 转发 | 用授权测试账号证实出站直达上游，覆盖 Responses、Messages、工具、普通 JSON、SSE、取消和报告用量 |
 | 4. 内置 Kiro | 原生凭证、请求构造、二进制事件解码与 Messages 输出 | 按对外声明的授权类型验证，覆盖工具参数分段、非流式、异常帧、坏 CRC、截断流和续期并发 |
-| 5. 新控制台和部署 | 实现账号授权、建池、签发 Key、模型、请求和媒体页面，构建一份发布镜像 | 全新环境完成添加账号 → 分配池 → 签发 Key → 调用四个供应商。验证账号池授权、视频幂等、流取消及重启恢复 |
+| 5. 新控制台和部署 | 实现产品账号管理、签发 Key、模型、请求和媒体页面，构建一份发布镜像 | 全新环境完成添加账号 → 选择产品并签发 Key → 调用四个供应商。验证产品授权、视频幂等、流取消及重启恢复 |
 
 四个供应商的发布验收记录入站协议、账号类型、上游服务和响应类型。即梦对照测试对时间戳、请求 ID 和随机字段做归一化。媒体测试覆盖上游接收后提交响应丢失的恢复。部署验收确认应用镜像内只有一个产品服务入口，上游访问由该进程发起，配置只包含应用基础设施和供应商原生账号所需设置。
 

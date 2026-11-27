@@ -1,11 +1,16 @@
 import type Router from '@koa/router';
 import type { Store } from '../db/store.ts';
-import { AppError, isUUID, operations } from '../domain.ts';
+import { AppError, isProvider, isUUID, operations } from '../domain.ts';
 import type { Files } from '../media/files.ts';
 import { publicVideo } from '../media/video.ts';
 import { createOpenAIOAuthRequest, exchangeOpenAIOAuthCode } from '../providers/codex/runtime.ts';
 import { registerAdminSession } from './admin-session.ts';
 import { jsonBody, fetchAsset, objectBody } from './request.ts';
+
+function accountLabel(label: unknown) {
+  if (typeof label !== 'string' || label.length > 100) throw new AppError(400, 'invalid_account');
+  return label.trim();
+}
 
 export function registerAdmin(
   router: Router,
@@ -16,42 +21,24 @@ export function registerAdmin(
 ) {
   registerAdminSession(router, store, config);
   router.get('/admin/v1/accounts', async (ctx) => {
+    const provider = ctx.query.provider;
+    if (provider !== undefined && !isProvider(provider)) throw new AppError(400, 'invalid_provider');
     ctx.body = (
       await store.db.query(
-        `SELECT id,pool_id,provider,kind,label,enabled,expires_at,concurrency,cooldown_until
-      FROM provider_accounts ORDER BY created_at DESC`,
-      )
-    ).rows;
-  });
-  router.get('/admin/v1/pools', async (ctx) => {
-    ctx.body = (
-      await store.db.query(
-        'SELECT id,provider,name FROM account_pools ORDER BY provider,name',
+        `SELECT id,provider,kind,label,enabled,expires_at,cooldown_until
+         FROM provider_accounts WHERE ($1::text IS NULL OR provider=$1) ORDER BY created_at DESC,id`,
+        [provider ?? null],
       )
     ).rows;
   });
   router.post('/admin/v1/accounts', jsonBody, async (ctx) => {
-    const { provider, kind, credential, label, pool = 'Default', concurrency = 1 } = objectBody(ctx);
-    if (
-      typeof label !== 'string' ||
-      !label.trim() ||
-      label.length > 100 ||
-      typeof pool !== 'string' ||
-      !pool.trim() ||
-      pool.length > 100 ||
-      !Number.isInteger(concurrency) ||
-      concurrency < 1 ||
-      concurrency > 100
-    ) {
-      throw new AppError(400, 'invalid_account');
-    }
+    const { provider, kind, credential, label = '' } = objectBody(ctx);
+    if (!isProvider(provider)) throw new AppError(400, 'invalid_provider');
     ctx.body = await store.addAccount(
       provider,
       kind,
-      label,
+      accountLabel(label),
       credential,
-      pool,
-      concurrency,
       requestSignal(ctx, 45_000),
     );
     ctx.status = 201;
@@ -69,27 +56,22 @@ export function registerAdmin(
   router.get('/admin/v1/keys', async (ctx) => {
     ctx.body = (
       await store.db.query(
-        'SELECT id,label,prefix,created_at,revoked_at,scopes,expires_at FROM api_keys ORDER BY created_at DESC',
+        `SELECT id,label,prefix,created_at,revoked_at,scopes,expires_at,providers
+         FROM api_keys ORDER BY created_at DESC`,
       )
     ).rows;
   });
   router.post('/admin/v1/keys', jsonBody, async (ctx) => {
-    const { label, pools, scopes = operations, expires_at = null } = objectBody(ctx);
+    const { label, providers, scopes = operations, expires_at = null } = objectBody(ctx);
     if (
       typeof label !== 'string' ||
       !label.trim() ||
       label.length > 100 ||
-      !Array.isArray(pools) ||
-      !pools.length ||
-      pools.length > 100 ||
-      !pools.every((id) => typeof id === 'string' && isUUID(id))
+      !Array.isArray(providers) ||
+      !providers.length ||
+      !providers.every(isProvider)
     )
       throw new AppError(400, 'invalid_key');
-    const result = await store.db.query(
-      'SELECT count(*)::int AS count FROM account_pools WHERE id=ANY($1)',
-      [pools],
-    );
-    if (result.rows[0].count !== new Set(pools).size) throw new AppError(400, 'invalid_pool');
     if (
       !Array.isArray(scopes) ||
       !scopes.length ||
@@ -98,7 +80,7 @@ export function registerAdmin(
     ) {
       throw new AppError(400, 'invalid_key_scope');
     }
-    ctx.body = await store.createKey(label, pools, [...new Set(scopes)], expires_at);
+    ctx.body = await store.createKey(label.trim(), [...new Set(providers)], [...new Set(scopes)], expires_at);
     ctx.status = 201;
   });
   router.delete('/admin/v1/keys/:id', async (ctx) => {
@@ -145,9 +127,7 @@ export function registerAdmin(
 
   const redirectUri = process.env.CODEX_REDIRECT_URI ?? 'http://localhost:1455/auth/callback';
   router.post('/admin/v1/codex/authorize', jsonBody, async (ctx) => {
-    const { label } = objectBody(ctx);
-    if (typeof label !== 'string' || !label.trim() || label.length > 100)
-      throw new AppError(400, 'invalid_account');
+    const label = accountLabel(objectBody(ctx).label ?? '');
     const flow = await createOpenAIOAuthRequest({ redirectUri });
     await store.db.query('DELETE FROM authorization_flows WHERE expires_at<=now()');
     await store.db.query(`INSERT INTO authorization_flows VALUES($1,$2,$3,now()+interval '10 minutes')`, [
@@ -193,8 +173,6 @@ export function registerAdmin(
         ...token,
         expiresAt: new Date(Date.now() + (token.expiresIn ?? 3600) * 1000).toISOString(),
       },
-      'Default',
-      1,
       signal,
     );
     ctx.status = 201;

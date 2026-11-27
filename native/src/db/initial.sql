@@ -1,37 +1,30 @@
 CREATE TABLE gateway_schema (
   singleton boolean PRIMARY KEY DEFAULT true CHECK(singleton), version integer NOT NULL
 );
-INSERT INTO gateway_schema(version) VALUES(2);
 CREATE TABLE admin_sessions (
   digest bytea PRIMARY KEY, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX admin_sessions_expiry ON admin_sessions(expires_at);
-CREATE TABLE account_pools (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  name text NOT NULL, provider text NOT NULL, UNIQUE(provider, name), UNIQUE(id, provider)
-);
 CREATE TABLE provider_accounts (
-  id uuid PRIMARY KEY, pool_id uuid NOT NULL, provider text NOT NULL,
+  id uuid PRIMARY KEY, provider text NOT NULL,
   kind text NOT NULL, label text NOT NULL, secret bytea NOT NULL, enabled boolean NOT NULL DEFAULT true,
   expires_at timestamptz, cooldown_until timestamptz, concurrency integer NOT NULL DEFAULT 1 CHECK(concurrency BETWEEN 1 AND 100),
   last_used_at timestamptz, credential_version bigint NOT NULL DEFAULT 0,
-  refresh_until timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
-  FOREIGN KEY(pool_id,provider) REFERENCES account_pools(id,provider)
+  refresh_until timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX provider_accounts_by_product ON provider_accounts(provider,created_at DESC,id);
 CREATE TABLE account_models (
   account_id uuid NOT NULL REFERENCES provider_accounts ON DELETE CASCADE, public_id text NOT NULL,
   upstream_id text NOT NULL, operation text NOT NULL, capabilities jsonb NOT NULL,
   PRIMARY KEY(account_id, public_id, operation)
 );
+CREATE INDEX account_models_by_public_id ON account_models(public_id,operation,account_id);
 CREATE TABLE api_keys (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   label text NOT NULL, prefix text NOT NULL, digest bytea NOT NULL UNIQUE,
-  scopes text[] NOT NULL DEFAULT ARRAY['responses','messages','image','video'], expires_at timestamptz,
+  scopes text[] NOT NULL DEFAULT ARRAY['responses','messages','image','video'],
+  providers text[] NOT NULL CHECK(cardinality(providers)>0), expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(), revoked_at timestamptz
-);
-CREATE TABLE api_key_pool_grants (
-  key_id uuid NOT NULL REFERENCES api_keys, pool_id uuid NOT NULL REFERENCES account_pools,
-  PRIMARY KEY(key_id,pool_id)
 );
 CREATE TABLE account_leases (
   id uuid PRIMARY KEY, account_id uuid NOT NULL REFERENCES provider_accounts ON DELETE CASCADE,

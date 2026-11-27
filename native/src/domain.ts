@@ -21,3 +21,6 @@ export const credentialKinds = {
 } as const;
 
 export type Provider = keyof typeof credentialKinds;
+export const providers = Object.keys(credentialKinds) as Provider[];
+export const isProvider = (value: unknown): value is Provider =>
+  typeof value === 'string' && Object.hasOwn(credentialKinds, value);

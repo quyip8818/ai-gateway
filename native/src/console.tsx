@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-import { credentialKinds, type Provider } from './domain.ts';
+import { providers, type Provider } from './domain.ts';
+import { AddAccount } from './console-accounts.tsx';
 
 import { navigation, labels, cellText, columns, errorMessages } from './console-labels.ts';
 
@@ -13,13 +14,11 @@ function Console() {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [provider, setProvider] = useState<Provider>('jimeng');
-  const [kind, setKind] = useState('cookie');
   const [rows, setRows] = useState<Record<string, Row[]>>({});
   const [key, setKey] = useState('');
-  const [authURL, setAuthURL] = useState('');
   const [revision, setRevision] = useState(0);
 
-  async function api(path: string, method = 'GET', body?: unknown, signal?: AbortSignal) {
+  async function api<T = unknown>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers['content-type'] = 'application/json';
     const response = await fetch('/admin/v1/' + path, {
@@ -33,7 +32,6 @@ function Console() {
       setSignedIn(false);
       setRows({});
       setKey('');
-      setAuthURL('');
     }
     const value = response.status === 204 ? null : await response.json();
     if (!response.ok) {
@@ -53,13 +51,15 @@ function Console() {
     return () => check.abort();
   }, []);
 
+  const endpoint = page === 'Accounts' ? 'accounts?provider=' + provider : page.toLowerCase();
+
   useEffect(() => {
     if (!signedIn) return;
     const load = new AbortController();
-    const endpoints = ['accounts', 'pools', 'keys', 'models', 'requests', 'media', 'videos'];
-    Promise.all(endpoints.map(async (path) => [path, await api(path, 'GET', undefined, load.signal)]))
+    const endpoints = page === 'Media' ? [endpoint, 'videos'] : [endpoint];
+    Promise.all(endpoints.map(async (path) => [path, await api<Row[]>(path, 'GET', undefined, load.signal)] as const))
       .then((result) => {
-        if (!load.signal.aborted) setRows(Object.fromEntries(result));
+        if (!load.signal.aborted) setRows((previous) => ({ ...previous, ...Object.fromEntries(result) }));
       })
       .catch((error) => {
         if (!load.signal.aborted) setNotice(error.message);
@@ -67,7 +67,7 @@ function Console() {
     return () => {
       load.abort();
     };
-  }, [signedIn, revision]);
+  }, [signedIn, revision, endpoint, page]);
 
   async function act(run: () => Promise<unknown>, success?: string) {
     setBusy(true);
@@ -82,7 +82,7 @@ function Console() {
       setBusy(false);
     }
   }
-  const tabRows = rows[page.toLowerCase()] ?? [];
+  const tabRows = rows[endpoint] ?? [];
   if (!signedIn)
     return (
       <main className="login">
@@ -129,6 +129,7 @@ function Console() {
             <button
               className={page === item ? 'selected' : ''}
               key={item}
+              disabled={busy}
               onClick={() => {
                 setPage(item);
                 setNotice('');
@@ -147,7 +148,6 @@ function Console() {
               setSignedIn(false);
               setRows({});
               setKey('');
-              setAuthURL('');
             });
           }}
         >
@@ -169,116 +169,25 @@ function Console() {
           </p>
         )}
         {page === 'Accounts' && (
-          <section>
-            <h2>添加账号</h2>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const form = e.currentTarget;
-                const data = new FormData(form);
-                void act(async () => {
-                  const input = String(data.get('credential') ?? '').trim();
-                  let credential: unknown = input;
-                  if (input.startsWith('{')) {
-                    try {
-                      credential = JSON.parse(input);
-                    } catch {
-                      throw new Error('账号凭证的 JSON 格式有误');
-                    }
-                  }
-                  await api('accounts', 'POST', {
-                    provider,
-                    kind,
-                    credential,
-                    label: data.get('label'),
-                    pool: data.get('pool') || 'Default',
-                    concurrency: Number(data.get('concurrency')),
-                  });
-                  form.reset();
-                }, '账号已添加');
-              }}
-            >
-              <div className="fields">
-                <label>
-                  供应商
-                  <select
-                    value={provider}
-                    onChange={(e) => {
-                      const selected = e.target.value as Provider;
-                      setProvider(selected);
-                      setKind(credentialKinds[selected][0]);
-                    }}
-                  >
-                    {Object.keys(credentialKinds).map((p) => (
-                      <option key={p} value={p}>{labels[p] ?? p}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  授权方式
-                  <select value={kind} onChange={(e) => setKind(e.target.value)}>
-                    {credentialKinds[provider].map((k) => (
-                      <option key={k} value={k}>{labels[k] ?? k}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  账号名称
-                  <input name="label" required maxLength={100} />
-                </label>
-                <label>
-                  账号池
-                  <input name="pool" placeholder="默认" />
-                </label>
-                <label>
-                  并发数
-                  <input name="concurrency" defaultValue={1} type="number" min={1} max={100} />
-                </label>
-              </div>
-              <label>
-                账号凭证
-                <textarea name="credential" required autoComplete="off" spellCheck={false} />
-              </label>
-              <button disabled={busy}>验证并添加</button>
-            </form>
-            {provider === 'codex' && (
-              <form
-                className="oauth"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const data = new FormData(e.currentTarget);
-                  void act(async () => {
-                    if (!authURL) {
-                      const flow = await api('codex/authorize', 'POST', { label: data.get('label') });
-                      setAuthURL(flow.url);
-                    } else {
-                      await api('codex/complete', 'POST', { callback: data.get('callback') });
-                      setAuthURL('');
-                    }
-                  });
-                }}
-              >
-                <h3>Codex 浏览器授权</h3>
-                {authURL ? (
-                  <>
-                    <a href={authURL} target="_blank" rel="noreferrer">
-                      打开授权页面
-                    </a>
-                    <label>
-                      回调地址
-                      <input name="callback" required />
-                    </label>
-                  </>
-                ) : (
-                  <label>
-                    账号名称
-                    <input name="label" required />
-                  </label>
-                )}
-                <button disabled={busy}>{authURL ? '完成授权' : '创建授权链接'}</button>
-              </form>
-            )}
-          </section>
+          <>
+            <div className="products" role="group" aria-label="按产品管理账号">
+              {providers.map((item) => (
+                <button
+                  type="button"
+                  key={item}
+                  disabled={busy}
+                  aria-pressed={provider === item}
+                  onClick={() => {
+                    setProvider(item);
+                    setNotice('');
+                  }}
+                >
+                  {labels[item]}
+                </button>
+              ))}
+            </div>
+            <AddAccount key={provider} provider={provider} busy={busy} api={api} act={act} />
+          </>
         )}
         {page === 'Keys' && (
           <section>
@@ -289,9 +198,9 @@ function Console() {
                 const form = e.currentTarget;
                 const data = new FormData(form);
                 void act(async () => {
-                  const result = await api('keys', 'POST', {
+                  const result = await api<{ token: string }>('keys', 'POST', {
                     label: data.get('label'),
-                    pools: data.getAll('pool'),
+                    providers: data.getAll('provider'),
                   });
                   setKey(result.token);
                   form.reset();
@@ -303,15 +212,17 @@ function Console() {
                 <input name="label" required maxLength={100} />
               </label>
               <fieldset>
-                <legend>授权账号池</legend>
-                {(rows.pools ?? []).map((pool) => (
-                  <label className="check" key={pool.id}>
-                    <input type="checkbox" name="pool" value={pool.id} />
-                    {labels[pool.provider] ?? pool.provider} / {pool.name === 'Default' ? '默认' : pool.name}
-                  </label>
-                ))}
+                <legend>可调用的产品</legend>
+                <div className="product-checks">
+                  {providers.map((item) => (
+                    <label className="check" key={item}>
+                      <input type="checkbox" name="provider" value={item} disabled={busy} />
+                      {labels[item]}
+                    </label>
+                  ))}
+                </div>
               </fieldset>
-              <button disabled={busy || !rows.pools?.length}>签发密钥</button>
+              <button disabled={busy}>签发密钥</button>
             </form>
             {key && (
               <div className="reveal">
@@ -430,7 +341,11 @@ function Console() {
                 ))}
               </tbody>
             </table>
-            {!tabRows.length && <p className="empty">暂无{navigation[page]}</p>}
+            {!tabRows.length && (
+              <p className="empty">
+                {!rows[endpoint] && !notice ? '加载中…' : page === 'Accounts' ? `暂无${labels[provider]}账号` : `暂无${navigation[page]}`}
+              </p>
+            )}
           </div>
         </section>
       </main>

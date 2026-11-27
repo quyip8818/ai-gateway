@@ -1,4 +1,4 @@
-import { credentialKinds, type Provider } from '../domain.ts';
+import { credentialKinds, isProvider } from '../domain.ts';
 import { deriveAccountId } from './codex/runtime.ts';
 import { discoverCodex, invokeCodex, refreshCodex } from './codex/adapter.ts';
 import { discoverKiro, invokeKiro, refreshKiro } from './kiro/adapter.ts';
@@ -6,7 +6,7 @@ import { discoverJimeng } from './jimeng/adapter.ts';
 import { discoverClaude, invokeClaude } from './claude.ts';
 
 export function normalizeCredential(provider: string, kind: string, input: unknown) {
-  if (!Object.hasOwn(credentialKinds, provider) || !credentialKinds[provider as Provider].some((value) => value === kind)) {
+  if (!isProvider(provider) || !credentialKinds[provider].some((value) => value === kind)) {
     throw new Error('Unsupported provider or credential type');
   }
   const file = input && typeof input === 'object' ? (input as Record<string, unknown>) : undefined;

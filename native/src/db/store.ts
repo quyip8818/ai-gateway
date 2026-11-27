@@ -11,9 +11,10 @@ import pg from 'pg';
 import schema from './initial.sql';
 import { discover, normalizeCredential, refreshCredential } from '../providers/index.ts';
 
-import { AppError } from '../domain.ts';
+import { AppError, type Provider } from '../domain.ts';
 
 export const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
+const SCHEMA_VERSION = 3;
 
 export function openStore(connection: string, secret: string) {
   const db = new pg.Pool({ connectionString: connection, max: 20 });
@@ -81,12 +82,14 @@ export function openStore(connection: string, secret: string) {
       await client.query('SELECT pg_advisory_xact_lock(683191340)');
       const exists = (await client.query("SELECT to_regclass('gateway_schema') IS NOT NULL AS value")).rows[0]
         .value;
-      if (exists) {
-        const version = (await client.query('SELECT version FROM gateway_schema WHERE singleton')).rows[0]
-          ?.version;
-        if (version !== 2) throw new Error('The database schema version is unsupported. Set DATABASE_URL to an empty database.');
-      } else {
+      if (!exists) {
         await client.query(schema);
+        await client.query('INSERT INTO gateway_schema(version) VALUES($1)', [SCHEMA_VERSION]);
+        return;
+      }
+      const { rows: [marker] } = await client.query('SELECT version FROM gateway_schema WHERE singleton');
+      if (marker?.version !== SCHEMA_VERSION) {
+        throw new Error('The database schema version is unsupported. Set DATABASE_URL to an empty database.');
       }
     });
   }
@@ -134,32 +137,26 @@ export function openStore(connection: string, secret: string) {
 
   async function createKey(
     label: string,
-    pools: string[],
+    providers: Provider[],
     scopes: string[],
     expiresAt: string | null,
   ) {
     const token = 'ag_' + randomBytes(32).toString('base64url');
-    return tx(async (client) => {
-      const key = (
-        await client.query(
-          'INSERT INTO api_keys(label,prefix,digest,scopes,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id,label,prefix,scopes,expires_at',
-          [label, token.slice(0, 12), digest(token), scopes, expiresAt],
-        )
-      ).rows[0];
-      for (const pool of new Set(pools)) {
-        await client.query('INSERT INTO api_key_pool_grants(key_id,pool_id) VALUES($1,$2)', [key.id, pool]);
-      }
-      return { ...key, token };
-    });
+    const {
+      rows: [key],
+    } = await db.query(
+      `INSERT INTO api_keys(label,prefix,digest,scopes,expires_at,providers) VALUES($1,$2,$3,$4,$5,$6)
+       RETURNING id,label,prefix,scopes,expires_at,providers`,
+      [label, token.slice(0, 12), digest(token), scopes, expiresAt, providers],
+    );
+    return { ...key, token };
   }
 
   async function addAccount(
-    provider: string,
+    provider: Provider,
     kind: string,
     label: string,
     raw: unknown,
-    pool: string,
-    concurrency: number,
     signal: AbortSignal,
   ) {
     let credential;
@@ -179,23 +176,15 @@ export function openStore(connection: string, secret: string) {
     if (!models.length) throw new AppError(422, 'no_provider_models');
     const id = randomUUID();
     await tx(async (client) => {
-      const {
-        rows: [target],
-      } = await client.query(
-        'INSERT INTO account_pools(name,provider) VALUES($1,$2) ON CONFLICT(provider,name) DO UPDATE SET name=excluded.name RETURNING id',
-        [pool, provider],
-      );
       await client.query(
-        `INSERT INTO provider_accounts(id,pool_id,provider,kind,label,secret,concurrency,expires_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        `INSERT INTO provider_accounts(id,provider,kind,label,secret,expires_at)
+        VALUES($1,$2,$3,$4,$5,$6)`,
         [
           id,
-          target.id,
           provider,
           kind,
-          label,
+          label || `${provider}-${id.slice(0, 8)}`,
           seal(id, credential),
-          concurrency,
           credential.expiresAt ?? null,
         ],
       );
@@ -213,8 +202,9 @@ export function openStore(connection: string, secret: string) {
   }
 
   const allowed = `a.enabled AND EXISTS
-    (SELECT 1 FROM api_key_pool_grants g JOIN api_keys k ON k.id=g.key_id
-      WHERE g.key_id=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND g.pool_id=a.pool_id)`;
+    (SELECT 1 FROM api_keys k
+      WHERE k.id=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now())
+      AND a.provider=ANY(k.providers))`;
 
   async function models(key) {
     return (

@@ -10,8 +10,8 @@ import pg from 'pg';
 import { testTool } from './text-provider-contract.mjs';
 
 test(
-  'blank PostgreSQL and one server exercise all providers',
-  { skip: !process.env.TEST_DATABASE_URL, timeout: 60_000 },
+  'a fresh PostgreSQL database exercises all products and their access boundaries',
+  { skip: !process.env.TEST_DATABASE_URL, timeout: 90_000 },
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), 'ai-gateway-native-test-'));
     const db = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL });
@@ -110,7 +110,7 @@ test(
       await json(
         '/admin/v1/accounts',
         admin,
-        { provider, kind, credential, label: provider, concurrency: provider === 'kiro' ? 2 : 1 },
+        { provider, kind, credential, label: provider },
         201,
       );
     }
@@ -130,7 +130,6 @@ test(
         provider: 'kiro',
         kind: 'oidc',
         label: 'Kiro OIDC',
-        pool: 'OIDC',
         credential: {
           refreshToken: 'test-oidc-refresh',
           clientId: 'fixture-client',
@@ -139,18 +138,25 @@ test(
       },
       201,
     );
+    const openaiKey = (
+      await json('/admin/v1/keys', admin, { label: 'codex-product', providers: ['codex'] }, 201)
+    ).token;
+    assert.ok(!(await json('/v1/models', openaiKey)).data.some((model) => model.id === 'codex/gpt-api-fixture'));
     await json(
       '/admin/v1/accounts',
       admin,
-      { provider: 'codex', kind: 'api-key', label: 'OpenAI API', pool: 'OpenAI', credential: 'test-openai-token' },
+      { provider: 'codex', kind: 'api-key', label: 'OpenAI API', credential: 'test-openai-token' },
       201,
     );
-    const pools = await json('/admin/v1/pools', admin);
+    const kiroAccounts = await json('/admin/v1/accounts?provider=kiro', admin);
+    assert.deepEqual(kiroAccounts.map((a) => a.kind).sort(), ['desktop', 'oidc']);
+    assert.ok(kiroAccounts.every((a) => a.provider === 'kiro'));
+    await json('/admin/v1/accounts?provider=unknown', admin, undefined, 400);
     const key = (
       await json(
         '/admin/v1/keys',
         admin,
-        { label: 'fixture', pools: pools.filter((p) => p.name === 'Default').map((p) => p.id) },
+        { label: 'fixture', providers: ['jimeng', 'codex', 'kiro', 'claude'] },
         201,
       )
     ).token;
@@ -158,7 +164,7 @@ test(
       await json(
         '/admin/v1/keys',
         admin,
-        { label: 'other', pools: [pools.find((p) => p.provider === 'claude').id] },
+        { label: 'other', providers: ['claude'] },
         201,
       )
     ).token;
@@ -169,7 +175,8 @@ test(
       ['claude'],
     );
     await json('/admin/v1/workspaces', admin, undefined, 404);
-    await json('/admin/v1/keys', admin, { label: 'invalid-pool', pools: ['11111111-1111-1111-1111-111111111111'] }, 400);
+    await json('/admin/v1/keys', admin, { label: 'invalid-product', providers: ['unknown'] }, 400);
+    await json('/admin/v1/keys', admin, { label: 'no-products', providers: [] }, 400);
     const claude = {
       model: 'claude/claude-fixture',
       messages: [{ role: 'user', content: 'hello' }],
@@ -211,13 +218,22 @@ test(
     );
     assert.equal((await json('/v1/messages', key, claude)).content[0].text, 'fixture');
     const kiro = { ...claude, model: models.find((m) => m.owned_by === 'kiro').id };
-    assert.equal((await json('/v1/messages', key, kiro)).content[0].text, 'fixture');
+    await json('/v1/messages', other, kiro, 404);
     const oidcKey = (
-      await json('/admin/v1/keys', admin, { label: 'oidc', pools: [pools.find((p) => p.name === 'OIDC').id] }, 201)
+      await json('/admin/v1/keys', admin, { label: 'kiro', providers: ['kiro'] }, 201)
     ).token;
+    const desktopAccount = kiroAccounts.find((a) => a.kind === 'desktop');
+    const oidcAccount = kiroAccounts.find((a) => a.kind === 'oidc');
+    async function enableAccount(account, enabled, token = admin) {
+      assert.equal((await http('/admin/v1/accounts/' + account.id, token, { enabled }, {}, 'PATCH')).status, 204);
+    }
+    await enableAccount(desktopAccount, false);
     assert.equal((await json('/v1/messages', oidcKey, kiro)).content[0].text, 'fixture');
+    await enableAccount(desktopAccount, true);
+    await enableAccount(oidcAccount, false);
     await db.query(
-      `UPDATE ${schema}.provider_accounts SET expires_at=now()-interval '1 minute' WHERE provider='kiro' AND kind='desktop'`,
+      `UPDATE ${schema}.provider_accounts SET expires_at=now()-interval '1 minute',concurrency=2 WHERE id=$1`,
+      [desktopAccount.id],
     );
     await Promise.all([json('/v1/messages', key, kiro), json('/v1/messages', key, kiro)]);
     assert.equal((await readFile(refreshes, 'utf8')).trim().split('\n').length, 2);
@@ -234,6 +250,7 @@ test(
     ]) {
       await json('/v1/messages', key, { ...kiro, messages: [{ role: 'user', content: text }] }, status);
     }
+    await enableAccount(oidcAccount, true);
     await db.query(
       `UPDATE ${schema}.provider_accounts SET expires_at=now()-interval '1 minute' WHERE label='Codex PKCE'`,
     );
@@ -247,14 +264,6 @@ test(
     assert.equal(stream.status, 200);
     assert.match(await stream.text(), /response.completed/);
     assert.ok((await readFile(refreshes, 'utf8')).split('\n').includes('codex'));
-    const openaiKey = (
-      await json(
-        '/admin/v1/keys',
-        admin,
-        { label: 'openai', pools: [pools.find((p) => p.name === 'OpenAI').id] },
-        201,
-      )
-    ).token;
     const openai = await json('/v1/responses', openaiKey, { model: 'codex/gpt-api-fixture', input: 'hello' });
     assert.equal(openai.id, 'resp_api_fixture');
     const codexTool = await json('/v1/responses', key, {
@@ -350,11 +359,13 @@ test(
     assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
-    await db.query(`UPDATE ${schema}.gateway_schema SET version=99`);
-    server = start();
-    const [exitCode] = await server.closed;
-    assert.notEqual(exitCode, 0);
-    assert.match(server.output(), /schema version is unsupported/);
-    assert.equal((await db.query(`SELECT version FROM ${schema}.gateway_schema`)).rows[0].version, 99);
+    for (const version of [2, 99]) {
+      await db.query(`UPDATE ${schema}.gateway_schema SET version=$1`, [version]);
+      server = start();
+      const [exitCode] = await server.closed;
+      assert.notEqual(exitCode, 0);
+      assert.match(server.output(), /schema version is unsupported/);
+      assert.equal((await db.query(`SELECT version FROM ${schema}.gateway_schema`)).rows[0].version, version);
+    }
   },
 );

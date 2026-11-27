@@ -2,9 +2,9 @@ import { registerAdmin } from './http/admin.ts';
 import { registerAPI } from './http/api.ts';
 import Koa from 'koa';
 import Router from '@koa/router';
-import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { readConfig } from './config.ts';
 import { openStore } from './db/store.ts';
@@ -12,6 +12,7 @@ import { AppError } from './domain.ts';
 import { openFiles } from './media/files.ts';
 import { createVideoService } from './media/video.ts';
 import { generation } from './http/generation.ts';
+import { listen } from './http/listen.ts';
 import browserTransport from './providers/jimeng/lib/browser-transport.ts';
 
 const config = (() => {
@@ -94,8 +95,18 @@ registerAPI(router, store, files, videos, generate, requestSignal, config.public
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-const server = app.listen(config.port, config.host);
-await once(server, 'listening');
+const server = createServer(app.callback());
+try {
+  await listen(server, config.port, config.host, process.argv.includes('--replace-listener'));
+} catch (error) {
+  await store.db.end();
+  if (error instanceof Error && 'code' in error && error.code === 'EADDRINUSE') {
+    console.error(`端口 ${config.host}:${config.port} 仍被占用。`);
+  } else {
+    console.error(error instanceof Error ? error.message : error);
+  }
+  process.exit(1);
+}
 console.log(`Frontend URL: ${config.frontendUrl}`);
 const worker = videos.run(shutdown.signal);
 async function stop() {

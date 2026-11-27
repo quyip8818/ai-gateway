@@ -3,7 +3,7 @@ export const navigation = {
 } as const;
 
 export const labels: Record<string, string> = {
-  jimeng: '即梦', codex: 'Codex', kiro: 'Kiro', claude: 'Claude', Default: '默认',
+  jimeng: '即梦', codex: 'Codex', kiro: 'Kiro', claude: 'Claude',
   cookie: 'Cookie', oauth: 'OAuth 授权', 'api-key': 'API 密钥',
   desktop: '桌面账号授权', oidc: 'IAM Identity Center 授权',
   responses: '文本响应', messages: '消息', count_tokens: 'Token 计数', image: '图片', video: '视频',
@@ -15,22 +15,24 @@ export const labels: Record<string, string> = {
 export function cellText(field: string, value: unknown) {
   if (value == null) return '—';
   if (field === 'enabled') return value ? '已启用' : '已停用';
+  if (field === 'providers' && Array.isArray(value)) {
+    return value.map((item) => labels[item] ?? item).join('、');
+  }
   if (field.endsWith('_at') && typeof value === 'string') return new Date(value).toLocaleString('zh-CN');
-  if (['provider', 'kind', 'operation', 'status'].includes(field)) return labels[String(value)] ?? String(value);
+  if (['kind', 'operation', 'status'].includes(field)) return labels[String(value)] ?? String(value);
   return String(value);
 }
 
 export const columns = {
   Accounts: [
     ['label', '账号'],
-    ['provider', '供应商'],
     ['kind', '授权方式'],
-    ['concurrency', '并发数'],
     ['enabled', '状态'],
   ],
   Keys: [
     ['label', '密钥'],
     ['prefix', '前缀'],
+    ['providers', '可调用的产品'],
     ['created_at', '创建时间'],
     ['revoked_at', '撤销时间'],
   ],
@@ -58,8 +60,9 @@ export const errorMessages: Record<string, string> = {
   invalid_origin: '登录地址与控制台配置不一致',
   account_validation_failed: '账号验证失败，请检查凭证',
   no_provider_models: '该账号没有可用模型',
-  invalid_pool: '请选择可用的账号池',
-  invalid_key: '请输入密钥名称并选择账号池',
+  invalid_provider: '请选择支持的产品',
+  invalid_key: '请输入密钥名称并选择可调用的产品',
+  invalid_account: '请检查账号信息，名称最多 100 个字符',
   invalid_oauth_callback: '回调地址无效',
   oauth_flow_expired: '授权已过期，请重新发起',
 };
