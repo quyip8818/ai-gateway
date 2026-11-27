@@ -40,8 +40,10 @@ export const columns = {
     ['revoked_at', '撤销时间'],
   ],
   Models: [
-    ['id', '模型'],
+    ['name', '模型名称'],
+    ['id', '调用 ID'],
     ['operation', '操作'],
+    ['description', '模型说明'],
   ],
   Requests: [
     ['model', '模型'],

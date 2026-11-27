@@ -42,6 +42,8 @@ export async function discoverJimeng(c, signal: AbortSignal) {
     publicId: m.id,
     operation: m.type,
     capabilities: {
+      name: m.name,
+      description: m.description,
       resolutions: m.supportedResolutions,
       durations: m.type === 'video' ? getSupportedVideoDurations(m) : undefined,
       counts: m.supportedGenerateCounts,

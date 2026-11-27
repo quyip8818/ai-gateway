@@ -1,3 +1,4 @@
+import { supportedAccountModel, unsupportedJimengImageModelKeys } from './model-filter.ts';
 import type pg from 'pg';
 import type { BrowserTransportMode } from '../../../../../shared/contracts/jimeng-settings.ts';
 
@@ -18,8 +19,11 @@ export function createRecords(db: pg.Pool) {
         `SELECT * FROM video_jobs
       ORDER BY created_at DESC LIMIT 100`)).rows,
     listModels: async () => (await db.query(
-        `SELECT DISTINCT m.public_id AS id,m.operation,m.capabilities FROM account_models m
-      JOIN provider_accounts a ON a.id=m.account_id WHERE a.enabled ORDER BY 1,2`)).rows,
+        `SELECT DISTINCT ON (m.public_id,m.operation) m.public_id AS id,m.operation,m.capabilities
+        FROM account_models m
+      JOIN provider_accounts a ON a.id=m.account_id WHERE a.enabled
+      AND ${supportedAccountModel(1)}
+      ORDER BY m.public_id,m.operation,a.id`, [unsupportedJimengImageModelKeys])).rows,
     setAccountBrowserTransport: (id: string, value: BrowserTransportMode | null) => db.query(
       "UPDATE provider_accounts SET browser_transport=$2 WHERE id=$1 AND provider='jimeng' AND deleted_at IS NULL",
       [id, value],

@@ -1,3 +1,4 @@
+import { supportedAccountModel, unsupportedJimengImageModelKeys } from './model-filter.ts';
 import { createAccountMaintenance, insertAccountModels } from './account-maintenance.ts';
 import { createRecords } from './records.ts';
 import { createSettingsRepository } from './settings.ts';
@@ -135,8 +136,10 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
       await db.query<{ id: string; operation: string; capabilities: Record<string, unknown>; provider: Provider }>(
         `SELECT DISTINCT ON(m.public_id,m.operation) m.public_id AS id,m.operation,m.capabilities,a.provider
       FROM account_models m JOIN provider_accounts a ON a.id=m.account_id WHERE ${allowed}
-      AND m.operation=ANY($2) ORDER BY m.public_id,m.operation,a.id`,
-        [key.id, key.scopes],
+      AND m.operation=ANY($2)
+      AND ${supportedAccountModel(3)}
+      ORDER BY m.public_id,m.operation,a.id`,
+        [key.id, key.scopes, unsupportedJimengImageModelKeys],
       )
     ).rows;
   }
@@ -149,23 +152,26 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     reserve = true,
   ) {
     if (!key.scopes.includes(operation)) throw new AppError(403, 'operation_not_granted');
+    const matchingModel = `${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4)
+      AND ${supportedAccountModel(5)}`;
+    const params = [key.id, model, operation, fixed, unsupportedJimengImageModelKeys];
     return tx(async (client) => {
       const {
         rows: [account],
       } = await client.query(
         `SELECT a.id,a.provider,a.kind,a.credential_version,m.upstream_id
         FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
-        WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4)
-        AND (NOT $5::boolean OR ((a.cooldown_until IS NULL OR a.cooldown_until<=now())
+        WHERE ${matchingModel}
+        AND (NOT $6::boolean OR ((a.cooldown_until IS NULL OR a.cooldown_until<=now())
         AND (SELECT count(*) FROM account_leases l WHERE l.account_id=a.id AND l.until_at>now())<a.concurrency))
         ORDER BY a.last_used_at NULLS FIRST,a.id LIMIT 1 ${reserve ? 'FOR UPDATE OF a SKIP LOCKED' : ''}`,
-        [key.id, model, operation, fixed, reserve],
+        [...params, reserve],
       );
       if (!account) {
         const visible = await client.query(
           `SELECT 1 FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
-          WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4) LIMIT 1`,
-          [key.id, model, operation, fixed],
+          WHERE ${matchingModel} LIMIT 1`,
+          params,
         );
         throw new AppError(
           visible.rowCount ? 429 : 404,

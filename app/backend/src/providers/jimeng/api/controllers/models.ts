@@ -1,4 +1,6 @@
-import { createHash } from "node:crypto";
+import {
+  AURA_CROWD_TEST_MODEL_KEY, catalogPresentation, modelId, unsupportedJimengImageModelKeys, type JimengModelType,
+} from "../../model-catalog.ts";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import APIException from "@/lib/exceptions/APIException.ts";
@@ -6,10 +8,10 @@ import EX from "@/api/consts/exceptions.ts";
 import { getVideoModelOperation } from "@/lib/configs/video-model-operations.ts";
 import { request } from "./core.ts";
 
-export type JimengModelType = "image" | "video";
-
 export interface JimengModelConfig {
   id: string;
+  name?: string;
+  description?: string;
   type: JimengModelType;
   modelReqKey: string;
   defaultResolution: string;
@@ -28,9 +30,6 @@ const DRAFT_VERSION = "3.3.20";
 const WEB_VERSION = "7.5.0";
 const MODEL_CACHE_TTL_MS = Number(process.env.JIMENG_MODEL_CACHE_TTL_MS || 5 * 60 * 1000);
 const SEEDANCE_2_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-const IMAGE_UPSCALE_MODEL_KEY = "image_upscale_paz";
-const AURA_CROWD_TEST_MODEL_KEY = "dreamina_crowd_test";
-export const SEEDREAM_55_MODEL_KEY = "high_aes_general_v55";
 
 const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
   {
@@ -302,15 +301,6 @@ export const preferredVideoModels = ["seedance-2.0"];
 
 const staticModels = [...STATIC_IMAGE_MODELS, ...STATIC_VIDEO_MODELS];
 
-function modelId(type: JimengModelType, modelReqKey: string) {
-  if (type === "image" && modelReqKey === SEEDREAM_55_MODEL_KEY) return "seedream-5.5";
-  if (type === "image" && modelReqKey === AURA_CROWD_TEST_MODEL_KEY) return "aura";
-
-  // Some catalog entries have no unique public name.
-  const suffix = createHash("sha256").update(modelReqKey).digest("hex").slice(0, 16);
-  return `${type}-${suffix}`;
-}
-
 function findObjectsWithModelReqKey(value: any, out: any[] = [], seen = new Set<any>()) {
   if (!value || typeof value !== "object" || seen.has(value)) return out;
   seen.add(value);
@@ -431,9 +421,9 @@ function collectVideoBenefits(candidate: any, resolutions: string[], staticConfi
 }
 
 function parseImageModel(candidate: any): JimengModelConfig | null {
-  const modelReqKey = candidate.model_req_key || candidate.modelReqKey;
+  const modelReqKey = candidate?.model_req_key || candidate?.modelReqKey;
   if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
-  if (modelReqKey === IMAGE_UPSCALE_MODEL_KEY) return null;
+  if (unsupportedJimengImageModelKeys.includes(modelReqKey)) return null;
 
   const staticConfig = STATIC_IMAGE_MODELS.find((model) => model.modelReqKey === modelReqKey);
   const preferredResolutions = sortImageResolutions(collectPreferredResolutions(candidate));
@@ -450,6 +440,7 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
   return {
     ...staticConfig,
     id: staticConfig?.id ?? modelId("image", modelReqKey),
+    ...catalogPresentation(candidate, modelReqKey),
     type: "image",
     modelReqKey,
     defaultResolution:
@@ -467,7 +458,7 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
 }
 
 function parseVideoModel(candidate: any): JimengModelConfig | null {
-  const modelReqKey = candidate.model_req_key || candidate.modelReqKey;
+  const modelReqKey = candidate?.model_req_key || candidate?.modelReqKey;
   if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
 
   const staticConfig = STATIC_VIDEO_MODELS.find((model) => model.modelReqKey === modelReqKey);
@@ -480,6 +471,7 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
   return {
     ...staticConfig,
     id,
+    ...catalogPresentation(candidate, modelReqKey),
     type: "video",
     modelReqKey,
     defaultResolution:

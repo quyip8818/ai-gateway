@@ -239,6 +239,7 @@ test(
     for (const [id, operation] of [
       ['seedream-5.0-lite', 'image'],
       ['seedream-5.5', 'image'],
+      ['anycook-1.0', 'image'],
       ['seedance-2.0', 'video'],
       ['seedance-2.5-recast', 'video'],
     ]) {
@@ -247,9 +248,36 @@ test(
       assert.equal(model.owned_by, 'bytedance');
       assert.ok(!('provider' in model));
     }
-    assert.doesNotMatch(JSON.stringify(models), /jimeng|high_aes_general|dreamina|fixture_internal_image/);
+    const adminModels = await json('/admin/v1/models', admin);
+    for (const catalog of [models, adminModels]) {
+      const anycook = catalog.find(({ id }) => id === 'anycook-1.0');
+      assert.equal(anycook?.name, 'Anycook 1.0');
+      assert.equal(anycook.description, 'Fixture description');
+    }
+    assert.equal((await db.query(
+      `SELECT 1 FROM ${schema}.account_models WHERE upstream_id=ANY($1)`,
+      [[
+        'jm_image_model_oa_it', 'jm_image_model_lib_f', 'jm_image_model_lib_s',
+        'jm_image_model_gg_bp', 'jm_image_model_gg_bp_21', 'jm_image_model_yc_mj82',
+      ]],
+    )).rowCount, 0);
+    // Simulate a catalog saved before the model was removed.
+    await db.query(
+      `INSERT INTO ${schema}.account_models (account_id,public_id,upstream_id,operation,capabilities)
+       SELECT id,'jimeng-n-2.1','jm_image_model_gg_bp_21','image','{}'
+       FROM ${schema}.provider_accounts WHERE provider='jimeng' AND enabled`,
+    );
+    const refreshedPublicModels = (await json('/v1/models', key)).data;
+    const refreshedAdminModels = await json('/admin/v1/models', admin);
+    for (const catalog of [refreshedPublicModels, refreshedAdminModels]) {
+      assert.ok(!catalog.some(({ id }) => id === 'jimeng-n-2.1'));
+    }
+    await json('/v1/images/generations', key, { model: 'jimeng-n-2.1', prompt: 'blocked model' }, 404);
+    await db.query(`DELETE FROM ${schema}.account_models WHERE upstream_id='jm_image_model_gg_bp_21'`);
+    assert.doesNotMatch(JSON.stringify(models), /jimeng|high_aes_general|dreamina|fixture_internal_image|jm_image_model_anycook/);
     const unnamedImages = models.filter(({ id }) => /^image-[a-f0-9]{16}$/.test(id));
     assert.equal(unnamedImages.length, 2);
+    assert.ok(unnamedImages.every(({ name }) => name === 'Same name'));
     assert.deepEqual(
       (await json('/v1/models', other)).data.map((m) => m.owned_by),
       ['claude'],

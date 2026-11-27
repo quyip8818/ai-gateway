@@ -230,6 +230,14 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
             ? {
               model_list: [
                 { model_req_key: 'high_aes_general_v55', name: 'Image 5.5', supported_resolutions: ['2k', '1k'] },
+                null,
+                { model_req_key: 'jm_image_model_anycook', display_name: 'Anycook 1.0', model_tip: 'Fixture description' },
+                { model_req_key: 'jm_image_model_oa_it' },
+                { model_req_key: 'jm_image_model_lib_f' },
+                { model_req_key: 'jm_image_model_lib_s' },
+                { model_req_key: 'jm_image_model_gg_bp' },
+                { model_req_key: 'jm_image_model_gg_bp_21' },
+                { model_req_key: 'jm_image_model_yc_mj82' },
                 ...(config.headers.get('Cookie').includes('sessionid=test-jimeng-replacement') ? [] : [
                   { model_req_key: 'high_aes_general_v50', name: 'Image 5.0 Lite' },
                 ]),

@@ -1,3 +1,4 @@
+import { SEEDREAM_55_MODEL_KEY } from "../../model-catalog.ts";
 import _ from "lodash";
 
 import APIException from "@/lib/exceptions/APIException.ts";
@@ -6,7 +7,7 @@ import util from "@/lib/util.ts";
 import { request, uploadFile } from "./core.ts";
 import { checkGenerationCredits } from "./generation-credits.ts";
 import logger from "@/lib/logger.ts";
-import { type JimengModelConfig, resolveImageModelConfig, SEEDREAM_55_MODEL_KEY } from "./models.ts";
+import { type JimengModelConfig, resolveImageModelConfig } from "./models.ts";
 import { IMAGE_DIMENSIONS, closestImageResolution, type ImageSize } from "./image-size.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
