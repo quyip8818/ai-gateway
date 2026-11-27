@@ -8,7 +8,8 @@
   "scripts": {
     "build": "node build.mjs",
     "start": "node dist/server.js",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs",
+    "lint": "oxlint --deny-warnings src test build.mjs"
   },
   "dependencies": {
     "@koa/router": "15.7.1",
@@ -28,6 +29,7 @@
     "playwright-core": "^1.63.0"
   },
   "devDependencies": {
-    "esbuild": "^0.27.0"
+    "esbuild": "^0.27.0",
+    "oxlint": "1.95.0"
   }
 }

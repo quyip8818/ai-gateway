@@ -9,7 +9,7 @@
 3. 用管理员 token 进入控制台，添加上游账号。账号验证后自动建立账号池和模型目录。
 4. 在 **Keys** 选择池并签发调用 Key。用 `GET /v1/models` 查询该 Key 能访问的模型 ID。
 
-本地开发可使用空 PostgreSQL 库，配置根目录 `.env` 后执行 `npm ci --prefix native && npm run build && npm start`。应用默认监听 8080。
+本地开发可使用 Docker 中独立运行的 PostgreSQL 数据库。参考根目录 `.env.example` 配置连接、加密密钥和管理员 token，执行 `npm ci --prefix native` 后运行 `pnpm start`。启动命令会重建前端和后端，本地使用固定端口 41873，启动后会打印控制台 URL。
 
 ## 账号和入口
 
@@ -28,6 +28,7 @@ Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器�
 
 ## 验证
 
+- `pnpm lint` 检查 TypeScript 源码、测试和构建脚本。
 - `npm test` 构建并运行协议测试。
 - 设置 `TEST_DATABASE_URL` 后，测试会在专用库中新建临时 schema，使用协议替身验证单进程、四个供应商、账号池权限、SSE、媒体交付及视频幂等。
 

@@ -2,9 +2,11 @@ import { registerAdmin } from './http/admin.ts';
 import { registerAPI } from './http/api.ts';
 import Koa from 'koa';
 import Router from '@koa/router';
+import { once } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { readConfig } from './config.ts';
 import { openStore } from './db/store.ts';
 import { AppError } from './domain.ts';
 import { openFiles } from './media/files.ts';
@@ -12,16 +14,17 @@ import { createVideoService } from './media/video.ts';
 import { generation } from './http/generation.ts';
 import browserTransport from './providers/jimeng/lib/browser-transport.ts';
 
-function required(name: string, min = 1) {
-  const value = process.env[name];
-  if (!value || value.length < min) throw new Error(`${name} must have at least ${min} characters`);
-  return value;
-}
-
-const store = openStore(required('DATABASE_URL'), required('GATEWAY_SECRET', 32));
-const adminToken = Buffer.from(required('ADMIN_TOKEN', 24));
-const directory = resolve(process.env.MEDIA_DIRECTORY ?? './data/native-media');
-const files = openFiles(directory);
+const config = (() => {
+  try {
+    return readConfig(process.env);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+})();
+const store = openStore(config.databaseUrl, config.gatewaySecret);
+const adminToken = Buffer.from(config.adminToken);
+const files = openFiles(resolve(config.mediaDirectory));
 const workspace = await store.initialize();
 await files.initialize();
 const videos = createVideoService(store, files);
@@ -88,14 +91,13 @@ router.get('/console.js', async (ctx) => {
 });
 
 registerAdmin(router, store, files, workspace, adminToken, requestSignal);
-registerAPI(router, store, files, videos, generate, requestSignal);
+registerAPI(router, store, files, videos, generate, requestSignal, config.publicBaseUrl);
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-const port = Number(process.env.PORT ?? 8080);
-const server = app.listen(port, process.env.HOST ?? '0.0.0.0', () =>
-  console.log(`ai-gateway listening on ${port}`),
-);
+const server = app.listen(config.port, config.host);
+await once(server, 'listening');
+console.log(`Frontend URL: ${config.frontendUrl}`);
 const worker = videos.run(shutdown.signal);
 async function stop() {
   if (shutdown.signal.aborted) return;

@@ -87,7 +87,7 @@ export const buildPayload = (
 
   const current = buildUserMessage(currentMessage, modelId);
   if (hasTools) {
-    current.userInputMessageContext = { ...(current.userInputMessageContext ?? {}), tools };
+    current.userInputMessageContext = { ...current.userInputMessageContext, tools };
   }
 
   // The final turn must be a user turn; fold a trailing assistant into history.

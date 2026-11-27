@@ -6,8 +6,9 @@
   },
   "scripts": {
     "build": "npm --prefix native run build",
-    "start": "node --env-file-if-exists=.env native/dist/server.js",
+    "start": "npm run build && node --env-file-if-exists=.env native/dist/server.js",
     "test": "npm --prefix native test",
-    "deploy": "docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build"
+    "deploy": "docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build",
+    "lint": "npm --prefix native run lint"
   }
 }

@@ -15,10 +15,8 @@ const DEFAULT_ASSISTANT_ID = 513695;
 const VERSION_CODE = "5.8.0";
 // 平台代码
 const PLATFORM_CODE = "7";
-// 设备ID
-const DEVICE_ID = Math.random() * 999999999999999999 + 7000000000000000000;
 // WebID
-const WEB_ID = Math.random() * 999999999999999999 + 7000000000000000000;
+const WEB_ID = Math.random() * 1e18 + 7e18;
 // 用户ID
 const USER_ID = util.uuid(false);
 // 伪装headers
@@ -168,7 +166,7 @@ export async function request(
     device_platform: "web",
     region: "CN",
     webId: WEB_ID,
-    ...(options.params || {}),
+    ...options.params,
   };
 
   const cookie = generateCookie(refreshToken);
@@ -178,7 +176,7 @@ export async function request(
     "Device-Time": deviceTime,
     Sign: sign,
     "Sign-Ver": "1",
-    ...(options.headers || {}),
+    ...options.headers,
   };
 
   logger.info(`发送请求: ${method.toUpperCase()} ${fullUrl}`);
@@ -459,7 +457,7 @@ async function generateAWSAuthorizationHeader(
 
   // 获取当前ISO时间
   const now = new Date();
-  const amzDate = now.toISOString().replace(/[:\-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
   const amzDay = amzDate.substring(0, 8);
 
   // 构建请求头

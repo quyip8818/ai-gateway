@@ -23,6 +23,7 @@ jobs:
           cache: npm
           cache-dependency-path: native/package-lock.json
       - run: npm ci --prefix native
+      - run: npm run lint
       - run: npm test
         env:
           TEST_DATABASE_URL: postgres://gatewaytest:test-password@127.0.0.1:5432/gatewaytest

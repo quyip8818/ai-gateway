@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { log } from "../core/log.ts";
 import { EventStreamDecoder } from "./event-stream.ts";
 import type {
   AssistantResponseEvent,

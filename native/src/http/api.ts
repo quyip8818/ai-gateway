@@ -13,6 +13,7 @@ export function registerAPI(
   videos: ReturnType<typeof createVideoService>,
   generate: ReturnType<typeof generation>,
   requestSignal: (ctx, timeout?: number) => AbortSignal,
+  publicBaseUrl: string,
 ) {
   async function caller(ctx) {
     const key = await store.getKey(bearer(ctx) || ctx.get('x-api-key'));
@@ -52,7 +53,7 @@ export function registerAPI(
         await uploads(ctx, ['image', 'image[]']),
         edit,
         requestSignal(ctx),
-        process.env.PUBLIC_BASE_URL || ctx.origin,
+        publicBaseUrl || ctx.origin,
       );
     });
   }

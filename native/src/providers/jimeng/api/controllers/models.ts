@@ -513,7 +513,7 @@ function collectBenefitTypes(value: any, out: string[] = [], seen = new Set<any>
 }
 
 function collectVideoBenefits(candidate: any, resolutions: string[], staticConfig?: JimengModelConfig) {
-  const benefits: Record<string, string> = { ...(staticConfig?.benefits || {}) };
+  const benefits: Record<string, string> = { ...staticConfig?.benefits };
   const benefitTypes = collectBenefitTypes(candidate);
 
   for (const benefitType of benefitTypes) {
@@ -561,7 +561,7 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
     : [];
 
   return {
-    ...(staticConfig || {}),
+    ...staticConfig,
     id: makeDynamicId("image", modelReqKey, name),
     type: "image",
     name,
@@ -609,7 +609,7 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
   const benefits = collectVideoBenefits(candidate, supportedResolutions, staticConfig);
 
   return {
-    ...(staticConfig || {}),
+    ...staticConfig,
     id,
     type: "video",
     name,
@@ -745,7 +745,7 @@ function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: Jim
   for (const model of dynamicModels) {
     const staticMatch = byReqKey.get(`${model.type}:${model.modelReqKey}`);
     const merged = cloneModelConfig({
-      ...(staticMatch || {}),
+      ...staticMatch,
       ...model,
       id: staticMatch?.id || model.id,
       supportedResolutions:
@@ -753,8 +753,8 @@ function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: Jim
           ? model.supportedResolutions
           : staticMatch?.supportedResolutions || [],
       benefits: {
-        ...(staticMatch?.benefits || {}),
-        ...(model.benefits || {}),
+        ...staticMatch?.benefits,
+        ...model.benefits,
       },
       benefitCountByResolution:
         model.benefitCountByResolution || staticMatch?.benefitCountByResolution,

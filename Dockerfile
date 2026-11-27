@@ -15,7 +15,7 @@ COPY --from=build /app/SOURCES.md /app/src/providers/jimeng/LICENSE ./licenses/j
 COPY --from=build /app/src/providers/codex/LICENSE /app/src/providers/codex/NOTICE ./licenses/codex/
 COPY --from=build /app/src/providers/kiro/LICENSE ./licenses/kiro/
 COPY --from=build /app/node_modules ./node_modules
-ENV NODE_ENV=production PORT=8080 MEDIA_DIRECTORY=/data/media \
+ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080 MEDIA_DIRECTORY=/data/media \
     JIMENG_BROWSER_EXECUTABLE=/usr/bin/chromium-browser \
     JIMENG_BROWSER_ARGS=--no-sandbox,--disable-dev-shm-usage
 USER node

@@ -11,7 +11,7 @@ function normalize(value, key) {
   }
   if (typeof value !== 'string') return value;
   if (ids.test(value)) return '<uuid>';
-  if (/^\s*[\[{]/.test(value)) {
+  if (/^\s*[[{]/.test(value)) {
     try {
       return normalize(JSON.parse(value));
     } catch {}
