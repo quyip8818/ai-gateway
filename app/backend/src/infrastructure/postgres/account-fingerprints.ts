@@ -16,10 +16,10 @@ export function createAccountFingerprints(digest: GatewayCrypto['digest']) {
     );
   }
 
-  async function assertAvailable(db: pg.Pool | pg.PoolClient, fingerprints: Buffer[]) {
+  async function assertAvailable(db: pg.Pool | pg.PoolClient, fingerprints: Buffer[], accountId: string | null = null) {
     const result = await db.query(
-      'SELECT 1 FROM account_credential_fingerprints WHERE fingerprint=ANY($1::bytea[]) LIMIT 1',
-      [fingerprints],
+      'SELECT 1 FROM account_credential_fingerprints WHERE fingerprint=ANY($1::bytea[]) AND account_id IS DISTINCT FROM $2::uuid LIMIT 1',
+      [fingerprints, accountId],
     );
     if (result.rowCount) throw new AppError(409, 'duplicate_account_credential');
   }
@@ -46,5 +46,9 @@ export function createAccountFingerprints(digest: GatewayCrypto['digest']) {
     if (!result.claimed) throw new AppError(409, 'account_credential_import_in_progress');
   }
 
-  return { hashes, assertAvailable, record, lock, claimImport };
+  function remove(db: pg.PoolClient, accountId: string) {
+    return db.query('DELETE FROM account_credential_fingerprints WHERE account_id=$1', [accountId]);
+  }
+
+  return { hashes, assertAvailable, record, remove, lock, claimImport };
 }

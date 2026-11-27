@@ -1,3 +1,4 @@
+import { AccountActions } from '../pages/account-actions.tsx';
 import React from 'react';
 import type { Provider } from '../../../../shared/contracts/providers.ts';
 import type { AdminApi, Row, RunAction } from '../api/admin.ts';
@@ -33,17 +34,7 @@ export function ResourceTable({ page, provider, tabRows, loading, busy, api, act
                   </td>
                 ))}
                 {page === 'Accounts' && (
-                  <td>
-                    <button
-                      className="quiet"
-                      disabled={busy}
-                      onClick={() =>
-                        void act(() => api.json('accounts/' + row.id, 'PATCH', { enabled: !row.enabled }))
-                      }
-                    >
-                      {row.enabled ? '停用' : '启用'}
-                    </button>
-                  </td>
+                  <td><AccountActions row={row} api={api} act={act} busy={busy} /></td>
                 )}
                 {page === 'Keys' && (
                   <td>

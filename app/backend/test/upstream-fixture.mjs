@@ -205,7 +205,7 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
       data = { code: 2000 };
     } else {
       assert.equal(url.hostname, 'jimeng.jianying.com');
-      assert.match(config.headers.get('Cookie'), /sessionid=test-jimeng-token/);
+      assert.match(config.headers.get('Cookie'), /sessionid=test-jimeng-(?:token|replacement)(?:;|$)/);
       let result;
       if (url.pathname === '/passport/account/info/v2/') result = { user_id: 'fixture' };
       else if (url.pathname.endsWith('/get_common_config')) {

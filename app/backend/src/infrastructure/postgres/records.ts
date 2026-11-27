@@ -4,7 +4,7 @@ export function createRecords(db: pg.Pool) {
   return {
     listAccounts: async (provider?: string) => (await db.query(
         `SELECT id,provider,kind,label,enabled,expires_at,cooldown_until
-         FROM provider_accounts WHERE ($1::text IS NULL OR provider=$1) ORDER BY created_at DESC,id`,
+         FROM provider_accounts WHERE deleted_at IS NULL AND ($1::text IS NULL OR provider=$1) ORDER BY created_at DESC,id`,
         [provider ?? null])).rows,
     listKeys: async () => (await db.query(
         `SELECT id,label,prefix,created_at,revoked_at,scopes,expires_at,providers
@@ -22,7 +22,7 @@ export function createRecords(db: pg.Pool) {
         `SELECT DISTINCT m.public_id AS id,m.operation,m.capabilities FROM account_models m
       JOIN provider_accounts a ON a.id=m.account_id WHERE a.enabled ORDER BY 1,2`)).rows,
     setAccountEnabled: (id: string, enabled: boolean) => db.query(
-      'UPDATE provider_accounts SET enabled=$2 WHERE id=$1', [id, enabled],
+      'UPDATE provider_accounts SET enabled=$2 WHERE id=$1 AND deleted_at IS NULL', [id, enabled],
     ),
     revokeKey: (id: string) => db.query(
       'UPDATE api_keys SET revoked_at=coalesce(revoked_at,now()) WHERE id=$1', [id],

@@ -1,10 +1,12 @@
 import type pg from 'pg';
+import { AppError } from '../../domain.ts';
 import type { GatewayCrypto } from '../crypto.ts';
 
 interface NewVideo {
   id: string;
   owner: string;
   account: string;
+  accountVersion: string;
   model: string;
   upstreamModel: string;
   operation: 'generate' | 'recast';
@@ -15,6 +17,23 @@ interface NewVideo {
   seconds: string;
   source: string | null;
   upstreamSource: string | null;
+}
+
+export async function hasPendingVideos(client: pg.PoolClient, accountId: string) {
+  const result = await client.query(
+    "SELECT 1 FROM video_jobs WHERE account_id=$1 AND status NOT IN ('completed','failed') LIMIT 1",
+    [accountId],
+  );
+  return Boolean(result.rowCount);
+}
+
+export function failPendingVideos(client: pg.PoolClient, accountId: string) {
+  return client.query(
+    `UPDATE video_jobs SET status='failed', error_code='account_disabled', completed_at=now(),
+       payload=NULL, lease_until=NULL, lease_version=lease_version+1
+     WHERE account_id=$1 AND status NOT IN ('completed','failed')`,
+    [accountId],
+  );
 }
 
 export function createVideoRepository(
@@ -45,14 +64,23 @@ export function createVideoRepository(
         WHERE owner_id=$1 AND operation=$2 AND idempotency_key=$3`,
       [owner, operation, key],
     )).rows[0],
-    insertVideo: async (job: NewVideo) => (await db.query(
-      `INSERT INTO video_jobs
-      (id,owner_id,account_id,public_model,upstream_model,operation,idempotency_key,input_hash,payload,status,size,seconds,source_id,upstream_source_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,$12,$13)
-      ON CONFLICT(owner_id,operation,idempotency_key) DO NOTHING RETURNING *`,
-      [job.id, job.owner, job.account, job.model, job.upstreamModel, job.operation, job.key, job.hash,
-        seal(job.id, job.payload), job.size, job.seconds, job.source, job.upstreamSource],
-    )).rows[0],
+    insertVideo: (job: NewVideo) => tx(async (client) => {
+      // Coordinate with credential replacement and deletion before binding a new job.
+      const { rowCount } = await client.query(
+        'SELECT 1 FROM provider_accounts WHERE id=$1 AND enabled AND credential_version=$2 FOR SHARE',
+        [job.account, job.accountVersion],
+      );
+      if (!rowCount) throw new AppError(409, 'account_changed');
+      const { rows: [created] } = await client.query(
+        `INSERT INTO video_jobs
+        (id,owner_id,account_id,public_model,upstream_model,operation,idempotency_key,input_hash,payload,status,size,seconds,source_id,upstream_source_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,$12,$13)
+        ON CONFLICT(owner_id,operation,idempotency_key) DO NOTHING RETURNING *`,
+        [job.id, job.owner, job.account, job.model, job.upstreamModel, job.operation, job.key, job.hash,
+          seal(job.id, job.payload), job.size, job.seconds, job.source, job.upstreamSource],
+      );
+      return created;
+    }),
     updateVideo: (id: string, version: number, status: string, wait: number, history: string | null, error: string | null, progress: number) => db.query(
       `UPDATE video_jobs SET status=$3,run_after=now()+$4*interval '1 second',history_id=coalesce($5,history_id),
         error_code=$6,progress=greatest(progress,$7),lease_until=NULL,

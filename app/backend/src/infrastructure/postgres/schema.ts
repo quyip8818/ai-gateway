@@ -3,8 +3,9 @@ import type { GatewayCrypto } from '../crypto.ts';
 import type { createAccountFingerprints } from './account-fingerprints.ts';
 import schema from './initial.sql';
 import fingerprintSchema from './account-fingerprints.sql';
+import accountLifecycleSchema from './account-lifecycle.sql';
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 export async function initializeSchema(
   client: pg.PoolClient,
@@ -16,24 +17,25 @@ export async function initializeSchema(
     .value;
   if (!exists) {
     await client.query(schema);
+    await client.query(accountLifecycleSchema);
     await client.query(fingerprintSchema);
     await client.query('INSERT INTO gateway_schema(version) VALUES($1)', [SCHEMA_VERSION]);
     return;
   }
   const { rows: [marker] } = await client.query('SELECT version FROM gateway_schema WHERE singleton');
-  if (marker?.version === 3) {
-    // Quiesce writes while reading and backfilling the existing account snapshots.
-    await client.query('LOCK TABLE provider_accounts IN SHARE MODE');
+  if (marker?.version === SCHEMA_VERSION) return;
+  if (marker?.version !== 3 && marker?.version !== 4) {
+    throw new Error(`The database schema version is unsupported (found ${marker?.version ?? 'none'}, expected ${SCHEMA_VERSION}).`);
+  }
+
+  await client.query(accountLifecycleSchema);
+  if (marker.version === 3) {
     await client.query(fingerprintSchema);
     const { rows } = await client.query('SELECT id,provider,secret FROM provider_accounts');
     for (const row of rows) {
       const credential = unseal(row.id, row.secret);
       await fingerprints.record(client, row.id, fingerprints.hashes(row.provider, credential));
     }
-    await client.query('UPDATE gateway_schema SET version=$1 WHERE singleton', [SCHEMA_VERSION]);
-    return;
   }
-  if (marker?.version !== SCHEMA_VERSION) {
-    throw new Error(`The database schema version is unsupported (found ${marker?.version ?? 'none'}, expected ${SCHEMA_VERSION}).`);
-  }
+  await client.query('UPDATE gateway_schema SET version=$1 WHERE singleton', [SCHEMA_VERSION]);
 }

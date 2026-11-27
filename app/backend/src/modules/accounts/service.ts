@@ -2,10 +2,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { AppError, type Provider } from '../../domain.ts';
 import type { GatewayCrypto } from '../../infrastructure/crypto.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
-import { discover, normalizeCredential, refreshCredential, codexAuthorization } from '../../providers/registry.ts';
+import { discover, normalizeCredential, normalizeJimengCredential, refreshCredential, codexAuthorization } from '../../providers/registry.ts';
 
 type AccountRepository = Pick<Store,
-  'importAccount' | 'findAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
+  'importAccount' | 'findAccount' | 'syncAccountModels' | 'deleteAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
   'saveAuthorization' | 'consumeAuthorization' | 'selectAccount' | 'claimAccount' | 'release' |
   'listAccounts' | 'setAccountEnabled'
 >;
@@ -34,25 +34,23 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
     return store.importAccount(provider, kind, label, imported, refreshToken, async () => {
       signal.throwIfAborted();
       let credential;
-      let models;
       try {
         credential = refreshToken ? await refreshCredential(provider, kind, imported, signal) : imported;
-        models = await discover(provider, kind, credential, signal);
       } catch (error) {
         throw accountValidationError(error);
       }
-      if (!models.length) throw new AppError(422, 'no_provider_models');
-      return { credential, models };
+      return { credential, models: await discoverModels({ provider, kind }, credential, signal) };
     });
   }
 
-  async function currentCredential(account: { id: string }, signal: AbortSignal) {
+  async function credentialSnapshot(id: string, signal: AbortSignal, includeDisabled = false) {
     for (;;) {
       signal.throwIfAborted();
-      const row = await store.findAccount(account.id);
-      if (!row?.enabled) throw new AppError(409, 'account_disabled');
+      const row = await store.findAccount(id);
+      if (includeDisabled && !row) throw new AppError(404, 'account_not_found');
+      if (!row || (!includeDisabled && !row.enabled)) throw new AppError(409, 'account_disabled');
       const value = crypto.unseal(row.id, row.secret);
-      if (!row.expires_at || new Date(row.expires_at).getTime() > Date.now() + 60_000) return value;
+      if (!row.expires_at || new Date(row.expires_at).getTime() > Date.now() + 60_000) return { account: row, credential: value };
       const claimed = await store.claimRefresh(row.id, row.credential_version);
       if (!claimed.rowCount) {
         await delay(250, undefined, { signal });
@@ -63,12 +61,52 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
           row.provider, row.kind, value, AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
         );
         const updated = await store.saveRefresh(row.id, row.provider, row.credential_version, next);
-        if (updated.rowCount) return next;
+        if (updated.rowCount) return { account: { ...row, credential_version: updated.rows[0].credential_version }, credential: next };
       } catch {
         await store.failRefresh(row.id, row.credential_version);
         throw new AppError(503, 'credential_refresh_failed');
       }
     }
+  }
+
+  async function currentCredential(account: { id: string }, signal: AbortSignal) {
+    return (await credentialSnapshot(account.id, signal)).credential;
+  }
+
+  async function existingAccount(id: string) {
+    const account = await store.findAccount(id);
+    if (!account) throw new AppError(404, 'account_not_found');
+    return account;
+  }
+
+  async function reload(id: string, signal: AbortSignal) {
+    const { account, credential } = await credentialSnapshot(id, signal, true);
+    const models = await discoverModels(account, credential, signal);
+    await store.syncAccountModels(account, models);
+  }
+
+  async function discoverModels(account: { provider: Provider; kind: string }, credential: unknown, signal: AbortSignal) {
+    let models;
+    try {
+      models = await discover(account.provider, account.kind, credential, signal);
+    } catch (error) {
+      throw accountValidationError(error);
+    }
+    if (!models.length) throw new AppError(422, 'no_provider_models');
+    return models;
+  }
+
+  async function replaceCookie(id: string, cookie: string, signal: AbortSignal) {
+    const account = await existingAccount(id);
+    if (account.provider !== 'jimeng' || account.kind !== 'cookie')
+      throw new AppError(400, 'account_cookie_unsupported');
+    const credential = normalizeJimengCredential({ token: cookie });
+    const models = await discoverModels(account, credential, signal);
+    await store.syncAccountModels(account, models, credential);
+  }
+
+  async function remove(id: string) {
+    await store.deleteAccount(await existingAccount(id));
   }
 
   async function beginAuthorization(label: string) {
@@ -104,7 +142,7 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
 
   return {
     list: store.listAccounts, setEnabled,
-    addAccount, currentCredential, beginAuthorization, completeAuthorization,
+    addAccount, currentCredential, beginAuthorization, completeAuthorization, reload, replaceCookie, remove,
     find: store.findAccount, select: store.selectAccount, claim: store.claimAccount, release: store.release,
   };
 }

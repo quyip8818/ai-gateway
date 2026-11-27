@@ -3,13 +3,13 @@ import { providers } from '../../../../shared/contracts/providers.ts';
 import type { AdminApi, RunAction } from '../api/admin.ts';
 import { labels } from '../labels.ts';
 
-export function KeysPage({ api, act, busy, issuedKey, setKey, setNotice }: {
+export function KeysPage({ api, act, busy, issuedKey, setKey, onCopyError }: {
   api: AdminApi;
   act: RunAction;
   busy: boolean;
   issuedKey: string;
   setKey: (key: string) => void;
-  setNotice: (notice: string) => void;
+  onCopyError: () => void;
 }) {
   return (
     <section>
@@ -52,7 +52,7 @@ export function KeysPage({ api, act, busy, issuedKey, setKey, setNotice }: {
           <button
             className="quiet"
             onClick={() =>
-              void navigator.clipboard.writeText(issuedKey).catch(() => setNotice('请手动复制密钥'))
+              void navigator.clipboard.writeText(issuedKey).catch(onCopyError)
             }
           >
             复制

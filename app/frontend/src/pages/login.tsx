@@ -1,3 +1,4 @@
+import { Feedback, type Notice } from '../components/feedback.tsx';
 import React from 'react';
 import type { AdminApi, RunAction } from '../api/admin.ts';
 
@@ -6,7 +7,7 @@ export function LoginPage({ api, act, busy, checking, notice, onSignIn }: {
   act: RunAction;
   busy: boolean;
   checking: boolean;
-  notice: string;
+  notice: Notice | null;
   onSignIn: () => void;
 }) {
   return (
@@ -33,11 +34,7 @@ export function LoginPage({ api, act, busy, checking, notice, onSignIn }: {
           密码
           <input name="password" type="password" autoComplete="current-password" required maxLength={1024} />
         </label>
-        {notice && (
-          <p className="feedback" role="status">
-            {notice}
-          </p>
-        )}
+        <Feedback notice={notice} />
         <button disabled={busy || checking}>登录</button>
       </form>
     </main>

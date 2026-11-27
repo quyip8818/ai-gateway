@@ -109,6 +109,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       id,
       owner: key.id,
       account: target.id,
+      accountVersion: target.credential_version,
       model: publicModel,
       upstreamModel: target.upstream_id,
       operation,

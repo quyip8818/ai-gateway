@@ -381,6 +381,41 @@ test(
     const content = await http('/v1/videos/' + first.id + '/content', key);
     assert.equal(Buffer.from(await content.arrayBuffer()).toString('ascii', 4, 8), 'ftyp');
     assert.equal((await json('/v1/videos/' + recast.id, key)).status, 'completed');
+    const [jimengAccount] = await json('/admin/v1/accounts?provider=jimeng', admin);
+    const accountPath = '/admin/v1/accounts/' + jimengAccount.id;
+    await enableAccount(jimengAccount, false);
+    assert.equal((await http(accountPath + '/reload', admin, undefined, {}, 'POST')).status, 204);
+    assert.equal((await json('/admin/v1/accounts?provider=jimeng', admin))[0].enabled, false);
+    assert.equal((await http(accountPath + '/credential', admin, { cookie: 'a=b' }, {}, 'PUT')).status, 422);
+    assert.equal((await http(accountPath + '/credential', admin, { cookie: 'test-jimeng-replacement' }, {}, 'PUT')).status, 204);
+    await json('/admin/v1/accounts', admin, {
+      provider: 'jimeng', kind: 'cookie', credential: 'sessionid=test-jimeng-replacement',
+    }, 409);
+    await enableAccount(jimengAccount, true);
+    assert.equal((await http(accountPath + '/reload', admin, undefined, {}, 'POST')).status, 204);
+    const { rows: [pendingVideo] } = await db.query(
+      `INSERT INTO ${schema}.video_jobs
+        (id,owner_id,account_id,public_model,upstream_model,operation,input_hash,status,run_after)
+       SELECT gen_random_uuid(),owner_id,account_id,public_model,upstream_model,operation,input_hash,
+         'queued',now()+interval '1 hour' FROM ${schema}.video_jobs WHERE id=$1 RETURNING id`,
+      [first.id.slice(6)],
+    );
+    const blockedReplacement = await http(accountPath + '/credential', admin, {
+      cookie: 'test-jimeng-token',
+    }, {}, 'PUT');
+    assert.equal(blockedReplacement.status, 409);
+    assert.equal((await blockedReplacement.json()).error.code, 'account_has_pending_videos');
+    assert.equal((await http(accountPath, admin, undefined, {}, 'DELETE')).status, 204);
+    const failed = await json('/v1/videos/video_' + pendingVideo.id, key);
+    assert.equal(failed.status, 'failed');
+    assert.equal(failed.error.code, 'account_disabled');
+    assert.deepEqual(await json('/admin/v1/accounts?provider=jimeng', admin), []);
+    assert.equal((await http(accountPath + '/reload', admin, undefined, {}, 'POST')).status, 404);
+    assert.equal((await http(accountPath, admin, { enabled: true }, {}, 'PATCH')).status, 404);
+    assert.equal((await json('/v1/videos/' + first.id, key)).status, 'completed');
+    await json('/admin/v1/accounts', admin, {
+      provider: 'jimeng', kind: 'cookie', credential: 'test-jimeng-replacement',
+    }, 201);
     assert.equal((await http('/admin/v1/session', admin, undefined, {}, 'DELETE')).status, 204);
     await json('/admin/v1/accounts', admin, undefined, 401);
     const beforePasswordChange = await http('/admin/v1/session', undefined, { username, password });

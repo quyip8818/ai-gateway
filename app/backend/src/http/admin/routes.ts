@@ -48,6 +48,22 @@ export function registerAdmin(
     await accounts.setEnabled(ctx.params.id, enabled);
     ctx.status = 204;
   });
+  router.put('/admin/v1/accounts/:id/credential', jsonBody, async (ctx) => {
+    const { cookie } = objectBody(ctx);
+    if (!isUUID(ctx.params.id) || typeof cookie !== 'string') throw new AppError(400, 'invalid_account');
+    await accounts.replaceCookie(ctx.params.id, cookie, requestSignal(ctx, 45_000));
+    ctx.status = 204;
+  });
+  router.post('/admin/v1/accounts/:id/reload', async (ctx) => {
+    if (!isUUID(ctx.params.id)) throw new AppError(404, 'account_not_found');
+    await accounts.reload(ctx.params.id, requestSignal(ctx, 45_000));
+    ctx.status = 204;
+  });
+  router.delete('/admin/v1/accounts/:id', async (ctx) => {
+    if (!isUUID(ctx.params.id)) throw new AppError(404, 'account_not_found');
+    await accounts.remove(ctx.params.id);
+    ctx.status = 204;
+  });
   router.get('/admin/v1/keys', async (ctx) => {
     ctx.body = await identity.listKeys();
   });

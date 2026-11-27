@@ -1,3 +1,4 @@
+import { Feedback, type Notice } from './components/feedback.tsx';
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -14,7 +15,9 @@ import { navigation } from './labels.ts';
 function Console() {
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
   const [page, setPage] = useState<keyof typeof navigation>('Accounts');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const showError = (error: unknown) =>
+    setNotice({ kind: 'error', message: error instanceof Error ? error.message : '请求失败' });
   const [busy, setBusy] = useState(false);
   const [provider, setProvider] = useState<Provider>('jimeng');
   const [rows, setRows] = useState<Record<string, Row[]>>({});
@@ -50,7 +53,7 @@ function Console() {
         if (!load.signal.aborted) setRows((previous) => ({ ...previous, ...Object.fromEntries(result) }));
       })
       .catch((error) => {
-        if (!load.signal.aborted) setNotice(error.message);
+        if (!load.signal.aborted) showError(error);
       });
     return () => {
       load.abort();
@@ -59,13 +62,13 @@ function Console() {
 
   async function act(run: () => Promise<unknown>, success?: string) {
     setBusy(true);
-    setNotice('');
+    setNotice(null);
     try {
       await run();
       setRevision((v) => v + 1);
-      if (success) setNotice(success);
+      if (success) setNotice({ kind: 'success', message: success });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '请求失败');
+      showError(error);
     } finally {
       setBusy(false);
     }
@@ -90,7 +93,7 @@ function Console() {
               disabled={busy}
               onClick={() => {
                 setPage(item);
-                setNotice('');
+                setNotice(null);
               }}
             >
               {title}
@@ -121,19 +124,15 @@ function Console() {
             </button>
           </div>
         </header>
-        {notice && (
-          <p className="feedback" role="status">
-            {notice}
-          </p>
-        )}
+        <Feedback notice={notice} />
         {page === 'Accounts' && (
           <AccountsPage provider={provider} busy={busy} api={api} act={act} onProvider={(item) => {
             setProvider(item);
-            setNotice('');
+            setNotice(null);
           }} />
         )}
         {page === 'Keys' && (
-          <KeysPage api={api} act={act} busy={busy} issuedKey={key} setKey={setKey} setNotice={setNotice} />
+          <KeysPage api={api} act={act} busy={busy} issuedKey={key} setKey={setKey} onCopyError={() => setNotice({ kind: 'error', message: '请手动复制密钥' })} />
         )}
         {page === 'Media' && <VideoTasks videos={rows.videos ?? []} />}
         <ResourceTable page={page} provider={provider} tabRows={tabRows} loading={!rows[endpoint] && !notice}

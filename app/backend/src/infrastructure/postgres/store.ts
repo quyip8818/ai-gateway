@@ -1,3 +1,4 @@
+import { createAccountMaintenance, insertAccountModels } from './account-maintenance.ts';
 import { createRecords } from './records.ts';
 import { createVideoRepository } from './videos.ts';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -117,15 +118,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
         ],
       );
       await fingerprints.record(client, id, hashes);
-      for (const model of models) {
-        await client.query(`INSERT INTO account_models VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [
-          id,
-          provider + '/' + model.id,
-          model.id,
-          model.operation,
-          model.capabilities,
-        ]);
-      }
+      await insertAccountModels(client, id, provider, models);
       return { id, model_count: models.length };
     }
 
@@ -170,7 +163,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
       const {
         rows: [account],
       } = await client.query(
-        `SELECT a.id,a.provider,a.kind,m.upstream_id
+        `SELECT a.id,a.provider,a.kind,a.credential_version,m.upstream_id
         FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
         WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4)
         AND (NOT $5::boolean OR ((a.cooldown_until IS NULL OR a.cooldown_until<=now())
@@ -220,7 +213,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
   }
 
   function findAccount(id: string) {
-    return db.query('SELECT * FROM provider_accounts WHERE id=$1', [id]).then((result) => result.rows[0]);
+    return db.query('SELECT * FROM provider_accounts WHERE id=$1 AND deleted_at IS NULL', [id]).then((result) => result.rows[0]);
   }
 
   function claimRefresh(id: string, version: number) {
@@ -236,7 +229,8 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
       await fingerprints.lock(client, provider);
       const updated = await client.query(
         `UPDATE provider_accounts SET secret=$1,expires_at=$2,
-        refresh_until=NULL,credential_version=credential_version+1 WHERE id=$3 AND credential_version=$4`,
+        refresh_until=NULL,credential_version=credential_version+1 WHERE id=$3 AND credential_version=$4
+         RETURNING credential_version`,
         [seal(id, next), next.expiresAt, id, version],
       );
       if (updated.rowCount) await fingerprints.record(client, id, fingerprints.hashes(provider, next));
@@ -278,6 +272,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     createKey,
     importAccount,
     findAccount,
+    ...createAccountMaintenance(tx, seal, fingerprints),
     claimRefresh,
     saveRefresh,
     failRefresh,
