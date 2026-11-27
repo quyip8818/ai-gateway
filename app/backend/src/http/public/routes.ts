@@ -5,7 +5,8 @@ import { AppError, isUUID } from '../../domain.ts';
 import type { MediaAssets } from '../../modules/media/assets.ts';
 import { publicVideo, type createVideoService } from '../../modules/media/video.ts';
 import type { generation } from '../../modules/gateway/generation.ts';
-import { bearer, jsonBody, mediaBody, fetchAsset, objectBody, uploads } from '../middleware/request.ts';
+import { bearer, jsonBody, mediaBody, objectBody, uploads } from '../middleware/request.ts';
+import { fetchAsset } from '../media.ts';
 
 export function registerAPI(
   router: Router,
@@ -91,10 +92,10 @@ export function registerAPI(
     ctx.body = publicVideo(await videos.get(await caller(ctx), ctx.params.id));
   });
   router.get('/v1/videos/:id/content', async (ctx) => {
-    const job = await videos.get(await caller(ctx), ctx.params.id);
+    const key = await caller(ctx);
+    const job = await videos.get(key, ctx.params.id);
     if (job.status !== 'completed') throw new AppError(409, 'video_not_ready');
-    ctx.type = 'video/mp4';
-    ctx.body = media.read(job.id);
+    await fetchAsset(media, ctx, key.id, job.id);
   });
 
   router.get('/v1/media/:id', async (ctx) => {

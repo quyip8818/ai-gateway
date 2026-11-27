@@ -17,7 +17,7 @@ export function openFiles(directory: string) {
         await unlink(temporary).catch(() => {});
       }
     },
-    read: (id: string) => createReadStream(path(id)),
+    read: (id: string, range?: { start: number; end: number }) => createReadStream(path(id), range),
   };
 }
 

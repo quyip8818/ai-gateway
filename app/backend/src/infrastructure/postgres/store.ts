@@ -1,9 +1,12 @@
 import { createAccountMaintenance, insertAccountModels } from './account-maintenance.ts';
 import { createRecords } from './records.ts';
+import { createSettingsRepository } from './settings.ts';
+import { createMediaRepository } from './media.ts';
 import { createVideoRepository } from './videos.ts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { GatewayCrypto } from '../crypto.ts';
 import pg from 'pg';
+import { withTransaction } from './transaction.ts';
 import { initializeSchema } from './schema.ts';
 import { createAccountFingerprints } from './account-fingerprints.ts';
 import type { CredentialTokens } from '../../providers/credentials.ts';
@@ -14,20 +17,7 @@ import { AppError, type Provider } from '../../domain.ts';
 export function openStore(connection: string, { seal, unseal, digest }: GatewayCrypto) {
   const db = new pg.Pool({ connectionString: connection, max: 20 });
   const fingerprints = createAccountFingerprints(digest);
-  async function tx<T>(run: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    const client = await db.connect();
-    try {
-      await client.query('BEGIN');
-      const value = await run(client);
-      await client.query('COMMIT');
-      return value;
-    } catch (error) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
+  const tx = <T>(run: (client: pg.PoolClient) => Promise<T>) => withTransaction(db, run);
 
   function sessionDigest(scope: string, session: string) {
     return digest(`admin-session:${scope}:${session}`);
@@ -264,7 +254,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
   return {
     health: () => db.query('SELECT 1'),
     close: () => db.end(),
-    initialize: () => tx((client) => initializeSchema(client, unseal, fingerprints)),
+    initialize: () => tx(initializeSchema),
     createAdminSession,
     hasAdminSession,
     endAdminSession,
@@ -282,6 +272,8 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     selectAccount,
     claimAccount,
     ...createRecords(db),
+    ...createSettingsRepository(db),
+    ...createMediaRepository(db),
     ...createVideoRepository(db, tx, { seal, unseal }),
     release: (lease: string) => db.query('DELETE FROM account_leases WHERE id=$1', [lease]),
   };

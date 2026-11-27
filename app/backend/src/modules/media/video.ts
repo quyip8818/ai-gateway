@@ -167,14 +167,13 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
         return;
       }
       if (state.state === 'ready') {
-        const bytes = await jimengMediaFiles.download(
+        const bytes = await jimengMediaFiles.downloadVideo(
           state.url,
           256 * 1024 * 1024,
           AbortSignal.any([signal, AbortSignal.timeout(40_000)]),
         );
         if (bytes.toString('ascii', 4, 8) !== 'ftyp') throw new Error('Unexpected video content');
-        await files.write(job.id, bytes);
-        await store.completeVideo(job, bytes.length);
+        await store.completeVideo(job, bytes.length, () => files.write(job.id, bytes));
         return;
       }
       await update(

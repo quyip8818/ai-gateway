@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { AppError } from '../../domain.ts';
 import type { GatewayCrypto } from '../crypto.ts';
+import { insertAsset } from './media.ts';
 
 interface NewVideo {
   id: string;
@@ -102,19 +103,19 @@ export function createVideoRepository(
               WHERE id=$1 AND lease_version=$2 AND lease_until>now()`,
       [id, version],
     ),
-    completeVideo: (job: { id: string; owner_id: string; lease_version: number }, bytes: number) => tx(async (client) => {
-          const completed = await client.query(
-            `UPDATE video_jobs SET status='completed',progress=100,
-            lease_until=NULL,completed_at=now(),error_code=NULL
-            WHERE id=$1 AND lease_version=$2 AND lease_until>now()`,
-            [job.id, job.lease_version],
-          );
-          if (!completed.rowCount) return;
-          await client.query(
-            `INSERT INTO media_assets(id,owner_id,video_id,mime,bytes)
-            VALUES($1,$2,$1,'video/mp4',$3)`,
-            [job.id, job.owner_id, bytes],
-          );
-        }),
+    completeVideo: (job: { id: string; lease_version: number }, bytes: number, writeFile: () => Promise<void>) => tx(async (client) => {
+      const { rows: [completed] } = await client.query<{ owner_id: string; public_model: string }>(
+        `UPDATE video_jobs SET status='completed',progress=100,
+          lease_until=NULL,completed_at=now(),error_code=NULL
+          WHERE id=$1 AND lease_version=$2 AND lease_until>now() RETURNING owner_id,public_model`,
+        [job.id, job.lease_version],
+      );
+      if (!completed) return;
+      // The guarded update holds the job lock until both the file and its metadata are ready.
+      await writeFile();
+      await insertAsset(client, {
+        id: job.id, owner: completed.owner_id, videoId: job.id, mime: 'video/mp4', bytes, model: completed.public_model,
+      });
+    }),
   };
 }

@@ -6,6 +6,7 @@ import { finished } from 'node:stream/promises';
 import { monitorSSE } from './sse.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { AppError } from '../../domain.ts';
+import { imageMime } from '../media/image-content.ts';
 import { invokeText, jimengImages, jimengMediaFiles, validateTextInput } from '../../providers/registry.ts';
 
 type TextDelivery = { status: number; retryAfter: string | null } & (
@@ -130,7 +131,8 @@ export function generation(
         throw new AppError(400, 'invalid_reference');
       }
     }
-    return attempt(key, input.model ?? 'jimeng/jimeng-image-5.0-lite', 'image', async (account) => {
+    const model = input.model ?? 'jimeng/jimeng-image-5.0-lite';
+    return attempt(key, model, 'image', async (account) => {
       const c = await accounts.currentCredential(account, signal);
       const urls = await jimengImages.generate(
         account.upstream_id, input.prompt, { size, n, filePaths: references }, c.token, signal,
@@ -138,10 +140,10 @@ export function generation(
       if (!urls.length) throw new AppError(502, 'image_generation_failed');
       const data = [];
       for (const url of urls) {
-        const bytes = await jimengMediaFiles.download(url, 24 * 1024 * 1024, signal);
-        const mime = jimengMediaFiles.imageMime(bytes);
+        const bytes = await jimengMediaFiles.downloadImage(url, 24 * 1024 * 1024, signal);
+        const mime = imageMime(bytes);
         if (!mime) throw new AppError(502, 'invalid_media_content');
-        const id = await media.saveImage(key.id, mime, bytes);
+        const id = await media.save(key.id, model, mime, bytes);
         data.push(
           format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) },
         );

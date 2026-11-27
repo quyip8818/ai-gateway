@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
+import { promisify } from 'node:util';
 import pg from 'pg';
 import { testTool } from './text-provider-contract.mjs';
 
@@ -91,6 +92,8 @@ test(
     await json('/v1/models', undefined, undefined, 401);
     await json('/openai/v1/models', undefined, undefined, 404);
     await json('/admin/v1/accounts', undefined, undefined, 401);
+    await json('/admin/v1/settings', undefined, undefined, 401);
+    await json('/admin/v1/media', undefined, undefined, 401);
     await json('/admin/v1/session', undefined, { username, password: 'wrong-password' }, 401);
     await json('/admin/v1/session', undefined, { username, password }, 403, { origin: 'https://foreign.example' });
     const session = await http('/admin/v1/session', undefined, { username, password });
@@ -100,6 +103,25 @@ test(
     const admin = cookie.split(';')[0];
     assert.equal((await http('/admin/v1/session', admin)).status, 204);
     await json('/admin/v1/accounts', admin.split('=')[1], undefined, 401);
+    const settingId = 'jimeng.browser_transport';
+    const settingPath = '/admin/v1/settings/' + settingId;
+    const readSetting = async () =>
+      (await json('/admin/v1/settings', admin)).runtime.find((item) => item.id === settingId);
+    const setSetting = async (value) => http(settingPath, admin, { value }, {}, 'PUT');
+    assert.equal((await readSetting()).source, 'env');
+    assert.equal((await readSetting()).value, 'off');
+    const rejected = await setSetting('invalid');
+    assert.equal(rejected.status, 400);
+    assert.equal((await rejected.json()).error.code, 'invalid_setting_value');
+    const applied = await setSetting('always');
+    assert.equal(applied.status, 200);
+    assert.equal((await applied.json()).runtime[0].value, 'always');
+    assert.equal((await readSetting()).source, 'console');
+    assert.equal((await setSetting(null)).status, 200);
+    assert.equal((await readSetting()).value, 'off');
+    assert.equal((await readSetting()).source, 'env');
+    assert.equal((await setSetting('off')).status, 200);
+
     const concurrent = await Promise.all(
       ['test-jimeng-token', 'Cookie: a=b; sessionid=test-jimeng-token'].map((credential) =>
         http('/admin/v1/accounts', admin, { provider: 'jimeng', kind: 'cookie', credential }),
@@ -341,6 +363,26 @@ test(
     invalidURL.searchParams.set('expires', '1');
     assert.equal((await fetch(invalidURL)).status, 401);
 
+    const mediaPage = '/admin/v1/media';
+    const images = await json(mediaPage + '?type=image&provider=jimeng&limit=1', admin);
+    assert.equal(images.total, 3);
+    assert.equal(images.total_pages, 3);
+    assert.equal(images.items.length, 1);
+    assert.equal(images.items[0].provider, 'jimeng');
+    assert.equal(images.items[0].model, 'jimeng/jimeng-image-5.0-lite');
+    assert.equal(images.items[0].type, 'image');
+    assert.equal(images.items[0].bytes, 8);
+    const pageTwo = await json(mediaPage + '?type=image&page=2&limit=1', admin);
+    assert.notEqual(pageTwo.items[0].id, images.items[0].id);
+    assert.equal((await json(mediaPage + '?provider=kiro', admin)).total, 0);
+    await json(mediaPage + '?limit=101', admin, undefined, 400);
+    await json(mediaPage + '?type=video&type=image', admin, undefined, 400);
+    const adminImage = '/admin/v1/media/' + images.items[0].id;
+    await json(adminImage, key, undefined, 401);
+    const attachment = await http(adminImage + '?download=1', admin);
+    assert.match(attachment.headers.get('content-disposition'), /attachment; filename=".*\.png"/);
+    assert.equal((await attachment.arrayBuffer()).byteLength, 8);
+
     const body = { prompt: 'fixture lost submission', size: '720x1280', seconds: 5 };
     const headers = { 'idempotency-key': 'same-operation' };
     const [first, duplicate] = await Promise.all([
@@ -370,17 +412,46 @@ test(
     await server.closed;
     server = start();
     await waitReady();
-    let current;
-    for (let i = 0; i < 60; i++) {
-      current = await json('/v1/videos/' + first.id, key);
-      if (['completed', 'failed'].includes(current.status)) break;
-      await delay(250);
+    assert.equal((await readSetting()).source, 'console');
+    assert.equal((await readSetting()).value, 'off');
+    async function waitForCompletedVideo(id) {
+      for (let i = 0; i < 60; i++) {
+        const video = await json('/v1/videos/' + id, key);
+        if (video.status === 'completed') return video;
+        assert.notEqual(video.status, 'failed', JSON.stringify(video.error));
+        await delay(250);
+      }
+      assert.fail('Video did not complete: ' + id + '\n' + server.output());
     }
-    assert.equal(current.status, 'completed');
+    const current = await waitForCompletedVideo(first.id);
     assert.equal((await readFile(submissions, 'utf8')).trim(), first.id.slice(6));
     const content = await http('/v1/videos/' + first.id + '/content', key);
     assert.equal(Buffer.from(await content.arrayBuffer()).toString('ascii', 4, 8), 'ftyp');
-    assert.equal((await json('/v1/videos/' + recast.id, key)).status, 'completed');
+    const range = await http('/v1/videos/' + first.id + '/content', key, undefined, { range: 'bytes=4-7' });
+    assert.equal(range.status, 206);
+    assert.equal(range.headers.get('accept-ranges'), 'bytes');
+    assert.match(range.headers.get('content-range'), /^bytes 4-7\/[0-9]+$/);
+    assert.equal(await range.text(), 'ftyp');
+    const suffix = await http('/v1/videos/' + first.id + '/content', key, undefined, { range: 'bytes=-4' });
+    assert.equal(suffix.status, 206);
+    assert.equal((await suffix.arrayBuffer()).byteLength, 4);
+    const conditional = await http('/v1/videos/' + first.id + '/content', key, undefined, {
+      range: 'bytes=4-7', 'if-range': '"unknown"',
+    });
+    assert.equal(conditional.status, 200);
+    assert.ok((await conditional.arrayBuffer()).byteLength > 4);
+    const unsatisfiable = await http('/v1/videos/' + first.id + '/content', key, undefined, { range: 'bytes=9999-' });
+    assert.equal(unsatisfiable.status, 416);
+    assert.match(unsatisfiable.headers.get('content-range'), /^bytes \*\/[0-9]+$/);
+    await unsatisfiable.arrayBuffer();
+    await waitForCompletedVideo(recast.id);
+    const videos = await json(mediaPage + '?type=video', admin);
+    assert.equal(videos.total, 2);
+    assert.equal(videos.items.find(({ id }) => id === first.id.slice(6)).model, current.model);
+    const videoHead = await http('/admin/v1/media/' + first.id.slice(6), admin, undefined, {}, 'HEAD');
+    assert.equal(videoHead.status, 200);
+    assert.equal(videoHead.headers.get('content-type'), 'video/mp4');
+    assert.ok(Number(videoHead.headers.get('content-length')) > 0);
     const [jimengAccount] = await json('/admin/v1/accounts?provider=jimeng', admin);
     const accountPath = '/admin/v1/accounts/' + jimengAccount.id;
     await enableAccount(jimengAccount, false);
@@ -429,7 +500,7 @@ test(
     assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
-    for (const version of [2, 99]) {
+    for (const version of [3, 4, 5, 6, 99]) {
       await db.query(`UPDATE ${schema}.gateway_schema SET version=$1`, [version]);
       server = start();
       const [exitCode] = await server.closed;
@@ -437,5 +508,23 @@ test(
       assert.match(server.output(), /schema version is unsupported/);
       assert.equal((await db.query(`SELECT version FROM ${schema}.gateway_schema`)).rows[0].version, version);
     }
+    const reset = () => promisify(execFile)(process.execPath, ['dist/reset.js'], {
+      env: { ...process.env, DATABASE_URL: url.href },
+    });
+    const { rows: [{ version: previousVersion }] } = await db.query(`SELECT version FROM ${schema}.gateway_schema`);
+    await db.query(`CREATE TABLE ${schema}.unrelated (value text NOT NULL);
+      INSERT INTO ${schema}.unrelated VALUES ('keep');
+      CREATE VIEW ${schema}.external_dependency AS SELECT id FROM ${schema}.api_keys`);
+    await assert.rejects(reset, /2BP01/);
+    assert.equal((await db.query(`SELECT version FROM ${schema}.gateway_schema`)).rows[0].version, previousVersion);
+    await db.query(`DROP VIEW ${schema}.external_dependency`);
+    await reset();
+    const { rows: [afterReset] } = await db.query(`SELECT
+      (SELECT count(*)::int FROM ${schema}.api_keys) AS keys,
+      (SELECT count(*)::int FROM ${schema}.runtime_settings) AS settings,
+      (SELECT value FROM ${schema}.unrelated) AS unrelated`);
+    assert.deepEqual(afterReset, { keys: 0, settings: 0, unrelated: 'keep' });
+    server = start();
+    await waitReady();
   },
 );

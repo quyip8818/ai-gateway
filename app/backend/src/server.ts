@@ -6,6 +6,7 @@ import { createCrypto } from './infrastructure/crypto.ts';
 import { createAccounts } from './modules/accounts/service.ts';
 import { createMediaAssets } from './modules/media/assets.ts';
 import { registerAdmin } from './http/admin/routes.ts';
+import { registerAdminResources } from './http/admin/resources.ts';
 import { registerAPI } from './http/public/routes.ts';
 import Koa from 'koa';
 import Router from '@koa/router';
@@ -20,6 +21,8 @@ import { createVideoService } from './modules/media/video.ts';
 import { generation } from './modules/gateway/generation.ts';
 import { listen } from './http/listen.ts';
 import browserTransport from './providers/jimeng/lib/browser-transport.ts';
+import { jimengBrowserSetting } from './providers/jimeng/settings.ts';
+import { createSettings } from './modules/settings/service.ts';
 
 const config = (() => {
   try {
@@ -29,11 +32,22 @@ const config = (() => {
     process.exit(1);
   }
 })();
+// Keep the console bundle paired with the routes loaded by this process.
+const [consoleHtml, consoleScript] = await Promise.all([
+  readFile(new URL('./frontend/index.html', import.meta.url), 'utf8'),
+  readFile(new URL('./frontend/console.js', import.meta.url), 'utf8'),
+]);
 const crypto = createCrypto(config.gatewaySecret);
 const store = openStore(config.databaseUrl, crypto);
 const files = openFiles(resolve(config.mediaDirectory));
 await store.initialize();
 await files.initialize();
+const settings = await createSettings(store, {
+  host: config.host,
+  port: config.port,
+  public_origin: config.publicBaseUrl ? new URL(config.publicBaseUrl).origin : null,
+  media_directory: config.mediaDirectory,
+}, [jimengBrowserSetting(process.env)]);
 const identity = createIdentity(store, config);
 const catalog = createCatalog(store);
 const accounts = createAccounts(store, crypto, config.codexRedirectUri);
@@ -58,16 +72,17 @@ router.get('/readyz', async (ctx) => {
   }
   ctx.status = 204;
 });
-router.get('/', async (ctx) => {
+router.get('/', (ctx) => {
   ctx.type = 'text/html';
-  ctx.body = await readFile(new URL('./frontend/index.html', import.meta.url), 'utf8');
+  ctx.body = consoleHtml;
 });
-router.get('/console.js', async (ctx) => {
+router.get('/console.js', (ctx) => {
   ctx.type = 'application/javascript';
-  ctx.body = await readFile(new URL('./frontend/console.js', import.meta.url), 'utf8');
+  ctx.body = consoleScript;
 });
 
-registerAdmin(router, store, identity, catalog, accounts, media, config.publicBaseUrl, signalFor);
+registerAdmin(router, store, identity, catalog, accounts, config.publicBaseUrl, signalFor);
+registerAdminResources(router, store, media, settings);
 registerAPI(router, identity, catalog, media, videos, generate, signalFor, config.publicBaseUrl);
 app.use(router.routes());
 app.use(router.allowedMethods());

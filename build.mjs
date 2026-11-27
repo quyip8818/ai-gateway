@@ -7,6 +7,7 @@ await Promise.all([
   build({
     entryPoints: [
       `${backend}/server.ts`,
+      `${backend}/reset.ts`,
       `${backend}/providers/registry.ts`,
       `${backend}/providers/kiro/kiro/event-stream.ts`,
     ],

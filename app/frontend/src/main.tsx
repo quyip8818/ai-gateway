@@ -1,4 +1,5 @@
 import { Feedback, type Notice } from './components/feedback.tsx';
+import { Icon, type IconName } from './components/icon.tsx';
 import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -6,11 +7,16 @@ import type { Provider } from '../../../shared/contracts/providers.ts';
 import { AccountsPage } from './pages/accounts.tsx';
 import { KeysPage } from './pages/keys.tsx';
 import { LoginPage } from './pages/login.tsx';
-import { VideoTasks } from './pages/media.tsx';
+import { MediaPage } from './pages/media.tsx';
+import { SettingsPage } from './pages/settings.tsx';
 import { ResourceTable } from './components/resource-table.tsx';
 import { createAdminApi, type Row } from './api/admin.ts';
 
 import { navigation } from './labels.ts';
+
+const navIcons: Record<keyof typeof navigation, IconName> = {
+  Accounts: 'accounts', Keys: 'key', Models: 'layers', Requests: 'activity', Media: 'image', Settings: 'settings',
+};
 
 function Console() {
   const [signedIn, setSignedIn] = useState<boolean | null>(null);
@@ -42,15 +48,15 @@ function Console() {
     return () => check.abort();
   }, [api]);
 
-  const endpoint = page === 'Accounts' ? 'accounts?provider=' + provider : page.toLowerCase();
+  const table = page === 'Media' || page === 'Settings' ? undefined : page;
+  const endpoint = table === 'Accounts' ? 'accounts?provider=' + provider : table?.toLowerCase();
 
   useEffect(() => {
-    if (!signedIn) return;
+    if (!signedIn || !endpoint) return;
     const load = new AbortController();
-    const endpoints = page === 'Media' ? [endpoint, 'videos'] : [endpoint];
-    Promise.all(endpoints.map(async (path) => [path, await api.json<Row[]>(path, 'GET', undefined, load.signal)] as const))
+    void api.json<Row[]>(endpoint, 'GET', undefined, load.signal)
       .then((result) => {
-        if (!load.signal.aborted) setRows((previous) => ({ ...previous, ...Object.fromEntries(result) }));
+        if (!load.signal.aborted) setRows((previous) => ({ ...previous, [endpoint]: result }));
       })
       .catch((error) => {
         if (!load.signal.aborted) showError(error);
@@ -58,7 +64,7 @@ function Console() {
     return () => {
       load.abort();
     };
-  }, [api, signedIn, revision, endpoint, page]);
+  }, [api, signedIn, revision, endpoint]);
 
   async function act(run: () => Promise<unknown>, success?: string) {
     setBusy(true);
@@ -73,7 +79,6 @@ function Console() {
       setBusy(false);
     }
   }
-  const tabRows = rows[endpoint] ?? [];
   if (!signedIn) return (
     <LoginPage api={api} act={act} busy={busy} checking={signedIn === null} notice={notice}
       onSignIn={() => setSignedIn(true)} />
@@ -81,27 +86,30 @@ function Console() {
 
   return (
     <div className="layout">
-      <aside>
+      <aside className="sidebar">
         <div className="brand">
           <span>AG</span> ai-gateway
         </div>
-        <nav>
+        <nav aria-label="控制台">
           {(Object.entries(navigation) as [keyof typeof navigation, string][]).map(([item, title]) => (
             <button
               className={page === item ? 'selected' : ''}
               key={item}
+              type="button"
+              aria-current={page === item ? 'page' : undefined}
               disabled={busy}
               onClick={() => {
                 setPage(item);
                 setNotice(null);
               }}
             >
-              {title}
+              <Icon name={navIcons[item]} />{title}
             </button>
           ))}
         </nav>
         <button
-          className="quiet"
+          className="sign-out"
+          type="button"
           disabled={busy}
           onClick={() => {
             void act(async () => {
@@ -112,15 +120,15 @@ function Console() {
             });
           }}
         >
-          退出登录
+          <Icon name="logout" />退出登录
         </button>
       </aside>
       <main>
-        <header>
+        <header className="page-header">
           <h1>{navigation[page]}</h1>
           <div className="actions">
-            <button className="quiet" onClick={() => setRevision((v) => v + 1)}>
-              刷新
+            <button type="button" className="quiet icon-text" disabled={busy} onClick={() => setRevision((v) => v + 1)}>
+              <Icon name="refresh" size={16} />刷新
             </button>
           </div>
         </header>
@@ -134,9 +142,10 @@ function Console() {
         {page === 'Keys' && (
           <KeysPage api={api} act={act} busy={busy} issuedKey={key} setKey={setKey} onCopyError={() => setNotice({ kind: 'error', message: '请手动复制密钥' })} />
         )}
-        {page === 'Media' && <VideoTasks videos={rows.videos ?? []} />}
-        <ResourceTable page={page} provider={provider} tabRows={tabRows} loading={!rows[endpoint] && !notice}
-          busy={busy} api={api} act={act} />
+        {page === 'Media' && <MediaPage api={api} revision={revision} />}
+        {page === 'Settings' && <SettingsPage api={api} revision={revision} act={act} busy={busy} />}
+        {table && endpoint && <ResourceTable page={table} provider={provider} tabRows={rows[endpoint] ?? []}
+          loading={!rows[endpoint] && !notice} busy={busy} api={api} act={act} />}
       </main>
     </div>
   );

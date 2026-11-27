@@ -5,7 +5,7 @@ import type { AdminApi, Row, RunAction } from '../api/admin.ts';
 import { cellText, columns, labels, navigation } from '../labels.ts';
 
 export function ResourceTable({ page, provider, tabRows, loading, busy, api, act }: {
-  page: keyof typeof navigation;
+  page: keyof typeof columns;
   provider: Provider;
   tabRows: Row[];
   loading: boolean;
@@ -22,7 +22,7 @@ export function ResourceTable({ page, provider, tabRows, loading, busy, api, act
               {columns[page].map(([field, title]) => (
                 <th key={field}>{title}</th>
               ))}
-              {['Accounts', 'Keys', 'Media'].includes(page) && <th>操作</th>}
+              {['Accounts', 'Keys'].includes(page) && <th>操作</th>}
             </tr>
           </thead>
           <tbody>
@@ -49,26 +49,6 @@ export function ResourceTable({ page, provider, tabRows, loading, busy, api, act
                         撤销
                       </button>
                     )}
-                  </td>
-                )}
-                {page === 'Media' && (
-                  <td>
-                    <button
-                      className="quiet"
-                      onClick={() =>
-                        void act(async () => {
-                          const blob = await api.download(row.id);
-                          const url = URL.createObjectURL(blob);
-                          const link = document.createElement('a');
-                          link.href = url;
-                          link.download = row.id + '.' + (blob.type.split('/')[1] ?? 'bin');
-                          link.click();
-                          setTimeout(() => URL.revokeObjectURL(url), 1000);
-                        })
-                      }
-                    >
-                      下载
-                    </button>
                   </td>
                 )}
               </tr>

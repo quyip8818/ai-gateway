@@ -1,13 +1,12 @@
 import type { Identity } from '../../modules/identity/service.ts';
 import type { Catalog } from '../../modules/catalog/service.ts';
 import type { Accounts } from '../../modules/accounts/service.ts';
-import type { MediaAssets } from '../../modules/media/assets.ts';
 import type Router from '@koa/router';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { AppError, isProvider, isUUID } from '../../domain.ts';
 import { publicVideo } from '../../modules/media/video.ts';
 import { registerAdminSession } from './session.ts';
-import { jsonBody, fetchAsset, objectBody } from '../middleware/request.ts';
+import { jsonBody, objectBody } from '../middleware/request.ts';
 
 function accountLabel(label: unknown) {
   if (typeof label !== 'string' || label.length > 100) throw new AppError(400, 'invalid_account');
@@ -16,11 +15,10 @@ function accountLabel(label: unknown) {
 
 export function registerAdmin(
   router: Router,
-  store: Pick<Store, 'listAttempts' | 'listAssets' | 'listVideos'>,
+  store: Pick<Store, 'listAttempts' | 'listVideos'>,
   identity: Identity,
   catalog: Catalog,
   accounts: Accounts,
-  media: MediaAssets,
   publicBaseUrl: string,
   requestSignal: (ctx, timeout?: number) => AbortSignal,
 ) {
@@ -78,9 +76,6 @@ export function registerAdmin(
   router.get('/admin/v1/requests', async (ctx) => {
     ctx.body = await store.listAttempts();
   });
-  router.get('/admin/v1/media', async (ctx) => {
-    ctx.body = await store.listAssets();
-  });
   router.get('/admin/v1/videos', async (ctx) => {
     ctx.body = (await store.listVideos()).map(publicVideo);
   });
@@ -95,6 +90,4 @@ export function registerAdmin(
     ctx.body = await accounts.completeAuthorization(objectBody(ctx).callback, requestSignal(ctx, 60_000));
     ctx.status = 201;
   });
-
-  router.get('/admin/v1/media/:id', async (ctx) => fetchAsset(media, ctx, null));
 }

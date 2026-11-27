@@ -11,3 +11,12 @@ export function Feedback({ notice }: { notice: Notice | null }) {
     </p>
   );
 }
+
+export function ResourceError({ message, retry }: { message: string; retry: () => void }) {
+  return (
+    <div className="feedback feedback-error resource-error" role="alert">
+      <span>{message}</span>
+      <button className="quiet" type="button" onClick={retry}>重试</button>
+    </div>
+  );
+}

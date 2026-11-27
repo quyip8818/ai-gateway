@@ -7,6 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "start": "npm run build && node --env-file-if-exists=.env dist/server.js --replace-listener",
+    "reset": "node build.mjs && node --env-file-if-exists=.env dist/reset.js",
     "test": "npm run build && node --test app/backend/test/*.test.mjs",
     "deploy": "docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build",
     "lint": "oxlint --deny-warnings app shared build.mjs"

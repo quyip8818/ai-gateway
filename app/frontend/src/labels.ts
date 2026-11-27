@@ -1,5 +1,5 @@
 export const navigation = {
-  Accounts: '上游账号', Keys: 'API 密钥', Models: '模型', Requests: '请求记录', Media: '媒体资源',
+  Accounts: '上游账号', Keys: 'API 密钥', Models: '模型', Requests: '请求记录', Media: '媒体资源', Settings: '系统配置',
 } as const;
 
 export const labels: Record<string, string> = {
@@ -46,12 +46,6 @@ export const columns = {
     ['status', '状态'],
     ['created_at', '开始时间'],
   ],
-  Media: [
-    ['id', '资源 ID'],
-    ['mime', '格式'],
-    ['bytes', '字节数'],
-    ['created_at', '创建时间'],
-  ],
 };
 
 export const errorMessages: Record<string, string> = {
@@ -77,4 +71,7 @@ export const errorMessages: Record<string, string> = {
   invalid_account: '请检查账号信息，名称最多 100 个字符',
   invalid_oauth_callback: '回调地址无效',
   oauth_flow_expired: '授权已过期，请重新发起',
+  invalid_media_query: '媒体筛选或分页参数无效',
+  setting_not_found: '找不到该配置项，请刷新',
+  invalid_setting_value: '配置值无效',
 };

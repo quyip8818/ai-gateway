@@ -10,9 +10,15 @@ CREATE TABLE provider_accounts (
   kind text NOT NULL, label text NOT NULL, secret bytea NOT NULL, enabled boolean NOT NULL DEFAULT true,
   expires_at timestamptz, cooldown_until timestamptz, concurrency integer NOT NULL DEFAULT 1 CHECK(concurrency BETWEEN 1 AND 100),
   last_used_at timestamptz, credential_version bigint NOT NULL DEFAULT 0,
-  refresh_until timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+  refresh_until timestamptz, deleted_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX provider_accounts_by_product ON provider_accounts(provider,created_at DESC,id);
+CREATE TABLE account_credential_fingerprints (
+  account_id uuid NOT NULL REFERENCES provider_accounts ON DELETE CASCADE,
+  fingerprint bytea NOT NULL,
+  PRIMARY KEY (account_id, fingerprint)
+);
+CREATE INDEX account_credential_fingerprint_lookup ON account_credential_fingerprints(fingerprint);
 CREATE TABLE account_models (
   account_id uuid NOT NULL REFERENCES provider_accounts ON DELETE CASCADE, public_id text NOT NULL,
   upstream_id text NOT NULL, operation text NOT NULL, capabilities jsonb NOT NULL,
@@ -45,12 +51,14 @@ CREATE TABLE video_jobs (
   UNIQUE(owner_id,operation,idempotency_key)
 );
 CREATE INDEX video_jobs_due ON video_jobs(run_after) WHERE status NOT IN ('completed','failed');
+CREATE INDEX video_jobs_pending_account ON video_jobs(account_id) WHERE status NOT IN ('completed','failed');
 CREATE TABLE media_assets (
   id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES api_keys,
-  video_id uuid UNIQUE, mime text NOT NULL, bytes bigint NOT NULL CHECK(bytes>0),
+  video_id uuid UNIQUE, mime text NOT NULL, bytes bigint NOT NULL CHECK(bytes>0), model text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY(owner_id,video_id) REFERENCES video_jobs(owner_id,id)
 );
+CREATE INDEX media_assets_recent ON media_assets(created_at DESC,id DESC);
 CREATE TABLE request_attempts (
   id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES api_keys, account_id uuid NOT NULL REFERENCES provider_accounts,
   operation text NOT NULL, model text NOT NULL, status text NOT NULL,
@@ -59,4 +67,9 @@ CREATE TABLE request_attempts (
 CREATE TABLE authorization_flows (
   state text PRIMARY KEY,
   label text NOT NULL, verifier bytea NOT NULL, expires_at timestamptz NOT NULL
+);
+
+CREATE TABLE runtime_settings (
+  id text PRIMARY KEY,
+  value text NOT NULL
 );

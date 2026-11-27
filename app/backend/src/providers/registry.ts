@@ -81,4 +81,4 @@ export function invokeText(account, model: string, operation: string, input, hea
 }
 
 export { codexAuthorization, normalizeJimengCredential };
-export { jimengImages, jimengVideos, jimengMediaFiles, MAX_IMAGE_REFERENCE_BYTES } from './jimeng/media.ts';
+export { jimengImages, jimengVideos, jimengMediaFiles } from './jimeng/media.ts';

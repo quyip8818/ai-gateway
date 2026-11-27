@@ -12,7 +12,7 @@ import { withJimengRequest } from './context.ts';
 import JimengError from './lib/exceptions/APIException.ts';
 import JimengExceptions from './api/consts/exceptions.ts';
 import { DEFAULT_VIDEO_RECAST_MODEL, VIDEO_RECAST_MODELS } from './lib/configs/video-recast-models.ts';
-import { downloadPublicMedia, imageReferenceMimeType, loadImageReference } from './lib/image-reference.ts';
+import { downloadGeneratedImage, downloadPublicMedia, loadImageReference } from './lib/image-reference.ts';
 
 export const jimengImages = {
   size: openAIImageSize,
@@ -80,5 +80,4 @@ export const jimengVideos = {
   },
 };
 
-export const jimengMediaFiles = { download: downloadPublicMedia, imageMime: imageReferenceMimeType, loadReference: loadImageReference };
-export { MAX_IMAGE_REFERENCE_BYTES } from './lib/image-reference.ts';
+export const jimengMediaFiles = { downloadImage: downloadGeneratedImage, downloadVideo: downloadPublicMedia, loadReference: loadImageReference };

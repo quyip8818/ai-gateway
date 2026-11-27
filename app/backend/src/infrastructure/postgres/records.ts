@@ -12,9 +12,6 @@ export function createRecords(db: pg.Pool) {
     listAttempts: async () => (await db.query(
         `SELECT id,model,operation,status,created_at,finished_at,usage
       FROM request_attempts ORDER BY created_at DESC LIMIT 100`)).rows,
-    listAssets: async () => (await db.query(
-        `SELECT id,video_id,mime,bytes,created_at FROM media_assets
-      ORDER BY created_at DESC LIMIT 100`)).rows,
     listVideos: async () => (await db.query(
         `SELECT * FROM video_jobs
       ORDER BY created_at DESC LIMIT 100`)).rows,
@@ -34,11 +31,5 @@ export function createRecords(db: pg.Pool) {
     finishAttempt: (id: string, status: string, usage: unknown) => db.query(
       'UPDATE request_attempts SET status=$2,usage=$3,finished_at=now() WHERE id=$1', [id, status, usage],
     ),
-    addAsset: (id: string, owner: string, mime: string, bytes: number) => db.query(
-      'INSERT INTO media_assets(id,owner_id,mime,bytes) VALUES($1,$2,$3,$4)', [id, owner, mime, bytes],
-    ),
-    findAsset: async (id: string, owner: string | null) => (await db.query(
-      'SELECT id,mime,bytes FROM media_assets WHERE id=$1 AND ($2::uuid IS NULL OR owner_id=$2)', [id, owner],
-    )).rows[0],
   };
 }

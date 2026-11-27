@@ -28,6 +28,13 @@ Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器�
 
 所有公开生成接口使用网关 Key，接受 `Authorization: Bearer <key>` 或 `x-api-key`。视频创建可带 `Idempotency-Key`，通过 `GET /v1/videos/:id` 查状态，通过 `GET /v1/videos/:id/content` 下载。复刻接受已授权的源任务 `video.id`，或同一上游账号可查询的即梦复刻任务 `video.upstream_id`。
 
+## 系统配置和媒体资源
+
+- 控制台的「系统配置」显示监听地址、对外入口和媒体目录。即梦浏览器传输模式按控制台覆盖、`JIMENG_BROWSER_TRANSPORT`、内置默认值的顺序生效。保存或清除覆盖后立即应用到处理请求的实例，其他实例在重启时读取 PostgreSQL 中的覆盖值。
+- 「媒体资源」支持按图片、视频和供应商筛选，以及分页、预览和下载。视频任务可从同一页面查看。媒体目录读取网关已保存的文件，下载支持字节范围。管理接口 `GET /admin/v1/media` 接受 `type`、`provider`、`page` 和 `limit`，并使用现有的管理员会话。
+- 首次启动时使用空的 PostgreSQL 数据库或 schema，服务会自动创建所需表。
+- 本地开发时先停止网关，再运行 `pnpm reset`。命令会按 `DATABASE_URL` 在当前 PostgreSQL schema 中删除并重建网关表，清空账号、密钥、任务和运行配置。Shell 中设置的 `DATABASE_URL` 优先于 `.env`。磁盘上的媒体文件保留。
+
 ## 代码布局
 
 - `app/frontend` 包含 React 控制台和管理 API 客户端。

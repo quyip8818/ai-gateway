@@ -1,5 +1,3 @@
-import _ from "lodash";
-
 import logger from "./logger.ts";
 
 
@@ -17,13 +15,16 @@ import logger from "./logger.ts";
  *   JIMENG_BROWSER_TRANSPORT=auto     # 仅在上游风控拦截时改用浏览器重试（默认）
  *   JIMENG_BROWSER_TRANSPORT=always   # 所有请求都走浏览器
  */
-export type BrowserTransportMode = "off" | "auto" | "always";
+export const BROWSER_TRANSPORT_MODES = ["off", "auto", "always"] as const;
+export type BrowserTransportMode = typeof BROWSER_TRANSPORT_MODES[number];
 
 /** 默认传输模式 */
 export const DEFAULT_BROWSER_TRANSPORT_MODE: BrowserTransportMode = "auto";
 
-/** 支持的模式取值 */
-const BROWSER_TRANSPORT_MODES: BrowserTransportMode[] = ["off", "auto", "always"];
+export function normalizeBrowserTransportMode(value?: string) {
+  const mode = value?.trim().toLowerCase();
+  return BROWSER_TRANSPORT_MODES.find((item) => item === mode);
+}
 
 /**
  * 浏览器传输请求参数
@@ -116,7 +117,8 @@ const inPageRequest = async (payload: {
 
 class BrowserTransport {
 
-  private readonly currentMode: BrowserTransportMode;
+  private currentMode: BrowserTransportMode;
+  private dependencyAvailable?: Promise<boolean>;
   /** 是否无头模式 */
   private readonly headless: boolean;
   /** 浏览器通道 */
@@ -142,16 +144,13 @@ class BrowserTransport {
   private context: any = null;
   /** 页面实例 */
   private page: any = null;
-  /** 正在启动中的 Promise，避免并发重复启动 */
-  private launching: Promise<void> | null = null;
-  /** 当前页面已应用的 cookie 指纹 */
-  private cookieFingerprint = "";
+  private appliedCookies = new Map<string, string>();
   /** 空闲关闭定时器 */
   private idleTimer: NodeJS.Timeout | null = null;
   /** 已知需要浏览器签名的请求标识 */
   private readonly browserRequiredKeys = new Set<string>();
   /** 请求串行队列 */
-  private queue: Promise<any> = Promise.resolve();
+  private queue: Promise<unknown> = Promise.resolve();
 
   constructor() {
     const env = process.env;
@@ -169,7 +168,7 @@ class BrowserTransport {
       .split(",")
       .map(item => item.trim())
       .filter(Boolean);
-    this.currentMode = this.normalizeMode(env.JIMENG_BROWSER_TRANSPORT) ?? DEFAULT_BROWSER_TRANSPORT_MODE;
+    this.currentMode = normalizeBrowserTransportMode(env.JIMENG_BROWSER_TRANSPORT) ?? DEFAULT_BROWSER_TRANSPORT_MODE;
   }
 
   /** 当前传输模式 */
@@ -182,16 +181,22 @@ class BrowserTransport {
     return this.currentMode !== "off";
   }
 
-  /**
-   * 规范化模式取值
-   *
-   * @param value 待校验的值
-   */
-  private normalizeMode(value: any): BrowserTransportMode | null {
-    const mode = String(value ?? "").trim().toLowerCase();
-    return BROWSER_TRANSPORT_MODES.includes(mode as BrowserTransportMode)
-      ? (mode as BrowserTransportMode)
-      : null;
+  setMode(mode: BrowserTransportMode) {
+    if (this.currentMode === mode) return;
+    this.currentMode = mode;
+    if (mode === "off") {
+      this.browserRequiredKeys.clear();
+      // Let requests that already hold a place in the queue finish first.
+      this.queue = this.queue.then(() => this.close());
+    }
+  }
+
+  async status() {
+    this.dependencyAvailable ??= import("playwright-core").then(() => true, () => false);
+    return {
+      dependencyAvailable: await this.dependencyAvailable,
+      browserRunning: Boolean(this.page && !this.page.isClosed()),
+    };
   }
 
   /**
@@ -210,7 +215,7 @@ class BrowserTransport {
    * @param key 请求标识（接口路径 + 上游模型）
    */
   markRequired(key: string) {
-    if (this.browserRequiredKeys.has(key)) return;
+    if (!this.enabled || this.browserRequiredKeys.has(key)) return;
     this.browserRequiredKeys.add(key);
     logger.info(`模型链路 ${key} 已标记为需要浏览器签名，后续请求将直接使用浏览器传输`);
   }
@@ -222,25 +227,26 @@ class BrowserTransport {
    */
   async request(options: BrowserRequestOptions): Promise<BrowserResponse> {
     // 串行执行：多账号场景下切换 cookie 需要独占页面
-    const task = this.queue.then(
-      () => this.execute(options),
-      () => this.execute(options)
-    );
+    const task = this.queue.then(async () => {
+      this.clearIdleTimer();
+      try {
+        return await this.execute(options);
+      } finally {
+        if (this.page) this.touch();
+      }
+    });
     this.queue = task.catch(() => undefined);
     return task;
   }
 
   /** 关闭浏览器 */
   async close() {
-    if (this.idleTimer) {
-      clearTimeout(this.idleTimer);
-      this.idleTimer = null;
-    }
+    this.clearIdleTimer();
     const browser = this.browser;
     this.browser = null;
     this.context = null;
     this.page = null;
-    this.cookieFingerprint = "";
+    this.appliedCookies.clear();
     if (!browser) return;
     try {
       await browser.close();
@@ -277,7 +283,6 @@ class BrowserTransport {
       result = await retryPage.evaluate(inPageRequest, payload);
     }
 
-    this.touch();
     if (result.status === 0)
       throw new Error(`[浏览器传输] 请求失败: ${result.error || "未知错误"}`);
 
@@ -301,10 +306,13 @@ class BrowserTransport {
    */
   private async ensurePage() {
     if (this.page && !this.page.isClosed()) return this.page;
-    if (!this.launching) {
-      this.launching = this.launch().finally(() => (this.launching = null));
+    await this.close();
+    try {
+      await this.launch();
+    } catch (error) {
+      await this.close();
+      throw error;
     }
-    await this.launching;
     if (!this.page) throw new Error("[浏览器传输] 浏览器页面不可用");
     return this.page;
   }
@@ -373,26 +381,31 @@ class BrowserTransport {
    * @param cookiePairs cookie 键值对
    */
   private async applyCookies(cookiePairs: Array<[string, string]>) {
-    if (!cookiePairs?.length) return;
-    const fingerprint = _.orderBy(cookiePairs, ([name]) => name)
-      .map(([name, value]) => `${name}=${_.size(value)}`)
-      .join("&");
-    if (fingerprint === this.cookieFingerprint) return;
-    await this.context.addCookies(
-      cookiePairs.map(([name, value]) => ({ name, value, domain: ".jianying.com", path: "/" }))
-    );
-    this.cookieFingerprint = fingerprint;
+    const next = new Map(cookiePairs);
+    if (next.size === this.appliedCookies.size
+      && [...next].every(([name, value]) => this.appliedCookies.get(name) === value)) return;
+
+    const scope = { domain: ".jianying.com", path: "/" };
+    for (const name of this.appliedCookies.keys()) {
+      if (!next.has(name)) await this.context.clearCookies({ name, ...scope });
+    }
+    if (next.size) {
+      await this.context.addCookies([...next].map(([name, value]) => ({ name, value, ...scope })));
+    }
+    this.appliedCookies = next;
   }
 
-  /**
-   * 刷新空闲关闭定时器
-   */
-  private touch() {
+  private clearIdleTimer() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+  }
+
+  private touch() {
+    this.clearIdleTimer();
     if (!this.idleTimeout) return;
     this.idleTimer = setTimeout(() => {
       logger.info(`浏览器传输层空闲超过 ${Math.round(this.idleTimeout / 1000)} 秒，自动关闭`);
-      this.close();
+      this.queue = this.queue.then(() => this.close());
     }, this.idleTimeout);
     this.idleTimer.unref?.();
   }

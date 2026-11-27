@@ -9,10 +9,10 @@ export function createMediaAssets(
   files: Pick<Files, 'read' | 'write'>,
   crypto: Pick<GatewayCrypto, 'signedMedia' | 'verifyMedia'>,
 ) {
-  async function saveImage(owner: string, mime: string, bytes: Buffer) {
+  async function save(owner: string, model: string, mime: string, bytes: Buffer) {
     const id = randomUUID();
     await files.write(id, bytes);
-    await store.addAsset(id, owner, mime, bytes.length);
+    await store.addAsset({ id, owner, mime, bytes: bytes.length, model });
     return id;
   }
 
@@ -20,10 +20,14 @@ export function createMediaAssets(
     if (!isUUID(id)) throw new AppError(404, 'media_not_found');
     const asset = await store.findAsset(id, owner);
     if (!asset) throw new AppError(404, 'media_not_found');
-    return { mime: asset.mime, bytes: Number(asset.bytes), stream: files.read(asset.id) };
+    return {
+      mime: asset.mime,
+      bytes: Number(asset.bytes),
+      read: (range?: { start: number; end: number }) => files.read(asset.id, range),
+    };
   }
 
-  return { saveImage, open, read: files.read, signedUrl: crypto.signedMedia, verifyUrl: crypto.verifyMedia };
+  return { save, open, signedUrl: crypto.signedMedia, verifyUrl: crypto.verifyMedia };
 }
 
 export type MediaAssets = ReturnType<typeof createMediaAssets>;

@@ -23,13 +23,11 @@ export function createAdminApi(onUnauthorized: () => void) {
     return response.status === 204 ? null as T : await response.json();
   }
 
-  async function download(id: string) {
-    const response = await request('media/' + id);
-    if (!response.ok) throw new Error('下载失败');
-    return response.blob();
-  }
+  return { json };
+}
 
-  return { json, download };
+export function adminMediaUrl(id: string, download = false) {
+  return '/admin/v1/media/' + encodeURIComponent(id) + (download ? '?download=1' : '');
 }
 
 export type AdminApi = ReturnType<typeof createAdminApi>;

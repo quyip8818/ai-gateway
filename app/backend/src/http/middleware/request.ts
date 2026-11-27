@@ -1,8 +1,7 @@
-import type { MediaAssets } from '../../modules/media/assets.ts';
 import koaBody from 'koa-body';
 import { readFile } from 'node:fs/promises';
 import { AppError } from '../../domain.ts';
-import { jimengMediaFiles, MAX_IMAGE_REFERENCE_BYTES } from '../../providers/registry.ts';
+import { imageMime, MAX_IMAGE_REFERENCE_BYTES } from '../../modules/media/image-content.ts';
 
 export const jsonBody = koaBody({ jsonLimit: '8mb', text: false, urlencoded: false });
 export const mediaBody = koaBody({
@@ -32,16 +31,9 @@ export async function uploads(ctx, names: string[]) {
   for (const file of items) {
     if (!file.size || file.size > MAX_IMAGE_REFERENCE_BYTES) throw new AppError(400, 'invalid_reference');
     const bytes = await readFile(file.filepath);
-    const mime = jimengMediaFiles.imageMime(bytes);
+    const mime = imageMime(bytes);
     if (!mime) throw new AppError(400, 'invalid_reference');
     references.push(`data:${mime};base64,${bytes.toString('base64')}`);
   }
   return references;
-}
-
-export async function fetchAsset(media: MediaAssets, ctx, ownerId: string | null) {
-  const asset = await media.open(ctx.params.id, ownerId);
-  ctx.type = asset.mime;
-  ctx.length = asset.bytes;
-  ctx.body = asset.stream;
 }
