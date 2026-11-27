@@ -16,6 +16,8 @@ services:
     image: ${GATEWAY_IMAGE:-ai-gateway:local}
     build:
       context: ..
+      args:
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-}
     environment:
       DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@db:5432/native_gateway
       GATEWAY_SECRET: ${GATEWAY_SECRET:?set GATEWAY_SECRET}

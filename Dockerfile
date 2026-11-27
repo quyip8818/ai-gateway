@@ -8,7 +8,11 @@ COPY shared/ ./shared/
 RUN npm run build && npm prune --omit=dev
 
 FROM node:24-alpine
-RUN apk add --no-cache ca-certificates chromium nss freetype harfbuzz ttf-freefont \
+ARG ALPINE_MIRROR
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s|https://dl-cdn.alpinelinux.org/alpine|$ALPINE_MIRROR|g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache ca-certificates chromium nss freetype harfbuzz ttf-freefont \
     && mkdir -p /data/media && chown -R node:node /data
 WORKDIR /app
 COPY --from=build /app/package.json ./

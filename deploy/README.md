@@ -10,6 +10,8 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 
 PostgreSQL 和媒体使用独立卷。Chromium 包含在应用镜像中。即梦浏览器传输默认自动选择，可用 `JIMENG_BROWSER_TRANSPORT=off` 关闭。每个内置供应商直接访问自己的上游。
 
+腾讯云服务器可以在环境文件中设置 `ALPINE_MIRROR=https://mirrors.tencent.com/alpine`，供容器构建时下载 Chromium 及其依赖。
+
 ## 数据库版本
 
 首次部署使用空数据库或空 schema，应用会从初始 SQL 建表。已有数据库的 schema 版本必须与正在部署的构建一致。部署到旧版本实例时，可先使用单独的 Compose 项目和端口验证新版本，保留旧项目及其卷。
