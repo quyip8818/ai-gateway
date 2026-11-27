@@ -5,6 +5,9 @@
 **/.env.*
 .bootstrap-password
 secrets/
-frontend/node_modules/
-frontend/dist/
+frontend/
 data/
+
+native/node_modules/
+native/dist/
+native/console.js

@@ -1,0 +1,63 @@
+{
+  "codex": {
+    "origin": "https://chatgpt.com",
+    "path": "/backend-api/codex/responses",
+    "body": {
+      "model": "gpt-fixture",
+      "input": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "hello"
+            }
+          ]
+        }
+      ],
+      "tools": [
+        {
+          "type": "function",
+          "name": "lookup",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "instructions": "",
+      "store": false,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "stream": true
+    }
+  },
+  "kiro": {
+    "conversationState": {
+      "chatTriggerType": "MANUAL",
+      "conversationId": "<uuid>",
+      "currentMessage": {
+        "userInputMessage": {
+          "content": "fixture Kiro tool",
+          "modelId": "claude-sonnet-4.5",
+          "origin": "AI_EDITOR",
+          "userInputMessageContext": {
+            "tools": [
+              {
+                "toolSpecification": {
+                  "name": "lookup",
+                  "description": "Tool: lookup",
+                  "inputSchema": {
+                    "json": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

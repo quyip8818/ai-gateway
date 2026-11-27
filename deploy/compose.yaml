@@ -2,13 +2,13 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: gateway
+      POSTGRES_DB: native_gateway
       POSTGRES_USER: gateway
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
-      - postgres:/var/lib/postgresql/data
+      - native_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      test: ["CMD-SHELL", "pg_isready -U gateway -d native_gateway"]
       interval: 3s
       timeout: 2s
       retries: 15
@@ -17,35 +17,24 @@ services:
     build:
       context: ..
     environment:
-      DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@db:5432/gateway
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL}
-      KEY_DIGEST_SECRET: ${KEY_DIGEST_SECRET:?set KEY_DIGEST_SECRET}
-      CONNECTION_SECRET: ${CONNECTION_SECRET:?set CONNECTION_SECRET}
-      BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-}
-      JIMENG_ACCOUNT_BASE_URL: ${JIMENG_ACCOUNT_BASE_URL:-}
-      CODEX_ACCOUNT_BASE_URL: ${CODEX_ACCOUNT_BASE_URL:-}
-      KIRO_ACCOUNT_BASE_URL: ${KIRO_ACCOUNT_BASE_URL:-}
-      CLAUDE_ACCOUNT_BASE_URL: ${CLAUDE_ACCOUNT_BASE_URL:-}
-      JIMENG_DOWNLOAD_HOSTS: ${JIMENG_DOWNLOAD_HOSTS:-}
-      MEDIA_STORAGE_DIR: /data/media
+      DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@db:5432/native_gateway
+      GATEWAY_SECRET: ${GATEWAY_SECRET:?set GATEWAY_SECRET}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      JIMENG_BROWSER_TRANSPORT: ${JIMENG_BROWSER_TRANSPORT:-auto}
+      CODEX_REDIRECT_URI: ${CODEX_REDIRECT_URI:-http://localhost:1455/auth/callback}
     volumes:
-      - media:/data/media
+      - native_media:/data/media
+    ports:
+      - "${HTTP_HOST:-127.0.0.1}:${HTTP_PORT:-8088}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/readyz').then(r=>process.exit(r.status===204?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
     depends_on:
       db:
         condition: service_healthy
-  caddy:
-    image: caddy:2-alpine
-    ports:
-      - "${HTTP_PORT:-8088}:80"
-      - "${HTTPS_PORT:-8443}:443"
-    environment:
-      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy:/data
-    depends_on:
-      - app
 volumes:
-  postgres:
-  media:
-  caddy:
+  native_postgres:
+  native_media:

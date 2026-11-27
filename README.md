@@ -1,67 +1,34 @@
-# AI Gateway
+# ai-gateway
 
-账号池反代网关。管理员导入上游账号凭证，网关发现模型并建立账号池。调用方拿到网关地址、公开模型 ID 和本系统签发的 Key。编程请求保留原生 SSE，图片和视频通过持久化媒体任务交付。
+单进程模型反代。应用内置即梦、Codex、Kiro 和 Claude 适配器，通过用户授权的账号直接访问各自上游。
 
-## 启动与使用
+## 启动
 
-1. 安装 Node.js 24、pnpm、Go 1.26 和 PostgreSQL 16。在 `deploy/.env` 填写初始管理员的 `BOOTSTRAP_USERNAME` 和 `BOOTSTRAP_PASSWORD`。
-2. 运行 `pnpm start`，访问 `http://127.0.0.1:32270/app/`。启动器构建前后端、启动 PostgreSQL，并初始化空库和管理员。运行配置读取根目录 `.env`，进程环境变量优先。
-3. 打开「账号」，选择供应商并导入凭证。通过上游目录检查后，网关自动填充对应账号池和公开模型，无需手工发布路由。
-4. 打开「调用密钥」，勾选要授权的池并签发 Key。复制密钥原文后，在「使用」页按模型配置 Codex 或 Claude Code，或打开「媒体创作」生成图片和视频。Key 轮换保留授权范围和任务归属。
+1. 用 `deploy/.env.example` 准备 `deploy/.env`，设置随机的 `POSTGRES_PASSWORD`、`GATEWAY_SECRET` 和 `ADMIN_TOKEN`。
+2. 运行 `npm run deploy`，访问 `http://localhost:8088`。Compose 创建独立的 PostgreSQL 库和媒体卷。
+3. 用管理员 token 进入控制台，添加上游账号。账号验证后自动建立账号池和模型目录。
+4. 在 **Keys** 选择池并签发调用 Key。用 `GET /v1/models` 查询该 Key 能访问的模型 ID。
 
-本地 PostgreSQL、媒体和生成的密钥位于 `data/`。用现有 PostgreSQL 时，提供空库的 `DATABASE_URL`，并为 `KEY_DIGEST_SECRET` 和 `CONNECTION_SECRET` 提供固定值或相应的 `_FILE`。开发环境需要重新初始化时，`pnpm reset` 会清空当前工作区的本地数据库。外部数据库用 `gatewayctl init-db` 初始化空库。
+本地开发可使用空 PostgreSQL 库，配置根目录 `.env` 后执行 `npm ci --prefix native && npm run build && npm start`。应用默认监听 8080。
 
-## 上游配置
+## 账号和入口
 
-| 供应商 | 控制台输入 | 执行方式 |
+| 供应商 | 凭证 | API |
 | --- | --- | --- |
-| 即梦 | 包含 `sessionid` 的账号 Cookie | 网关在专用 `jimeng-api` 实例验证 Cookie、添加账号并签发内部调用凭证。 |
-| Codex | Codex `auth.json` | CLI 账号文件导入专用 CLIProxyAPI v8；带 `OPENAI_API_KEY` 的文件可直连 OpenAI Platform。 |
-| Kiro | 含 `refreshToken` 的授权 JSON | 导入专用 kiro2api，执行器负责令牌续期。Builder ID 或 IAM Identity Center 导出还需匹配的客户端字段。公开入口使用 Anthropic Messages。 |
-| Claude | [Claude Console](https://platform.claude.com/settings/keys) 中已绑定工作区的 API Key | 在「上游账号 → 添加账号 → Claude」粘贴即可验证。账号入池后签发网关 Key，在「使用网关 → Claude Code」复制客户端配置。 |
+| 即梦 | 自己账号的 Cookie 或 `sessionid` | `/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/edits` |
+| Codex | 自己的 Codex 授权 JSON、控制台 OAuth 或 OpenAI API Key | `/v1/responses` |
+| Kiro | 自己的 Desktop 或 IAM Identity Center OIDC 凭证 JSON | `/v1/messages` |
+| Claude | Claude Console API Key | `/v1/messages`、`/v1/messages/count_tokens` |
 
-用部署时设置的管理员登录，在「上游账号 → 添加账号」选择即梦、Codex 或 Kiro，从「连接供应商」或「接入设置」验证服务。该入口由 `BOOTSTRAP_USERNAME` 授权，直接启动时也要设置这个变量。专用实例需要先运行，服务地址与管理凭证验证成功后即可继续输入 Cookie 或上传授权文件。Codex 也可直接填写 OpenAI API Key。已登记但尚未分配的实例可在接入设置中移除。
+Kiro Desktop 导入需要 `refreshToken` 或 `accessToken`。OIDC 续期需要与原授权匹配的 `clientId`、`clientSecret`、`region` 和 `refreshToken`。可选字段 `apiRegion` 和 `profileArn` 用于相应的 Kiro 数据面。
 
-部署方也可用 `ACCOUNT_EXECUTORS_FILE` 指向私有 JSON 配置。每个实例从空账号池启动，由网关独占，一个实例对应一个导入账号。执行器只在私有网络监听。控制台设置优先于同地址的部署配置，管理凭证加密保存。
+Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器的回调地址粘贴到控制台。默认回调是 `http://localhost:1455/auth/callback`。
 
-```json
-[
-  {"provider":"jimeng","url":"http://jimeng-1:8000","username":"gateway","password":"replace-with-private-password"},
-  {"provider":"codex","url":"http://codex-1:8317","management_key":"replace-with-management-key","runtime_key":"replace-with-codex-runtime-key"},
-  {"provider":"kiro","url":"http://kiro-1:8080","management_key":"replace-with-management-key","runtime_key":"replace-with-kiro-runtime-key"}
-]
-```
+所有公开生成接口使用网关 Key，接受 `Authorization: Bearer <key>` 或 `x-api-key`。视频创建可带 `Idempotency-Key`，通过 `GET /v1/videos/:id` 查状态，通过 `GET /v1/videos/:id/content` 下载。复刻接受已授权的源任务 `video.id`，或同一上游账号可查询的即梦复刻任务 `video.upstream_id`。
 
-- 即梦使用 [jimeng-free-api-all](https://github.com/zhizinan1997/jimeng-free-api-all) 的账号池、图片和异步视频 API。成品重定向使用的可信 CDN 主机名可在「即梦 → 接入设置 → 视频下载域名」管理，也可通过 `JIMENG_DOWNLOAD_HOSTS` 指定。视频始终回原执行器查询。
-- Codex 执行器启用 [CLIProxyAPI v8 管理 API](https://github.com/router-for-me/CLIProxyAPIDocs/blob/main/docs/en/management/apiv8.md)，使用独立、可写的凭证目录，并将 `runtime_key` 配到客户端 Key 列表。
-- Kiro 执行器用 [kiro2api](https://github.com/xwteam/kiro2api/blob/main/docs/en/API.md) 的管理接口导入和验证模型，分别配置其管理 Key 和调用 Key，并存储到独立的数据卷。
+## 验证
 
-部署方也可指定直接接受上游账号凭证的兼容执行器。变量为 `CODEX_ACCOUNT_BASE_URL`、`KIRO_ACCOUNT_BASE_URL`、`CLAUDE_ACCOUNT_BASE_URL`、`JIMENG_ACCOUNT_BASE_URL`。兼容执行器需要实现 `/v1/models` 和对应调用接口。已注册的 Codex 或 Kiro OAuth 客户端可通过 `ACCOUNT_OAUTH_CLIENTS_FILE` 配置浏览器授权和续期。以供应商 ID 为键填写 `token_url`、`client_id`，按需填写 `authorize_url`、`scope`、`resource`、`client_secret`，并注册网关的 `/console/v1/oauth/callback`。该流程需要可直接接受交换后令牌的兼容执行器。Claude 目前使用官方 Console 密钥。
+- `npm test` 构建并运行协议测试。
+- 设置 `TEST_DATABASE_URL` 后，测试会在专用库中新建临时 schema，使用协议替身验证单进程、四个供应商、账号池权限、SSE、媒体交付及视频幂等。
 
-## 添加兼容供应商
-
-账号池按供应商和授权归属隔离，网关 Key 可授权多个池。公开模型 ID 带池前缀，即使两个供应商提供同名模型，也会路由到指定的池。供应商身份用于凭证导入与目录展示，运行时按协议执行。Codex 对接 Responses，Claude 和 Kiro 可共用 Messages；token 计数由供应商声明。即梦沿用媒体任务协议、租约和原账号恢复流程。
-
-已有兼容端点可以配置到 `ACCOUNT_PROVIDERS_FILE`，Compose 下用挂载目录中的 `providers.json`。端点实现 `/v1/models` 和相应的调用 API。
-
-```json
-[
-  {"id":"team-models","label":"团队模型","base_url":"https://models.example.test","protocol":"messages","count_tokens":true}
-]
-```
-
-`protocol` 接受 `responses`、`messages` 或 `openai_media`。媒体端点须使用当前图片和视频任务契约，并通过 `media_models` 将模型 ID 映射到 `image.generate` 或 `video.generate`。仅在验证端点支持 `/v1/messages/count_tokens` 后为 Messages 配置 `count_tokens`。重启后控制台会显示该供应商和 API Key 输入，并为其账号创建独立的池。新授权或执行协议需要代码适配器。
-
-## 版本切换
-
-已有账号池数据库使用 `gatewayctl init-db` 增加供应商设置表，保留账号、Key、任务和部署配置。升级保留核心版本 1，上一版网关可在原库重新启动。空库也使用同一命令初始化。无版本的旧原型库需要使用单独的数据库或数据卷。
-
-调用端的 Responses、Messages 与媒体 API 路径延续。公开模型 ID 使用 `<账号池>/<模型>`，客户端更新模型配置并使用新签发的池授权 Key。旧的手工连接、模型路由和计费试算入口已退役。
-
-## 部署与验证
-
-Docker Compose 与 SSH 部署见 [部署指南](deploy/README.md)。架构与实施范围见 [账号池反代网关设计](docs/account-proxy-design.md)。
-
-- `pnpm lint` 检查前端、脚本和 Go 静态检查。 `pnpm --dir frontend run build` 构建控制台。
-- `go -C backend test ./...` 运行 Go 测试。将 `TEST_DATABASE_URL` 指向专用测试 PostgreSQL 启用集成测试，覆盖账号入池、模型权限、Key 轮换、SSE、媒体幂等、异步交付和任务恢复。
-- 真实账号可使用 `go -C backend test ./tests/integration -run TestLiveAuthorized -v`。显式设置 `GATEWAY_LIVE_TEST=1`、`GATEWAY_LIVE_URL`、`GATEWAY_LIVE_KEY`，按需设置 `GATEWAY_LIVE_OPENAI_MODEL`、`GATEWAY_LIVE_ANTHROPIC_MODEL`、`GATEWAY_LIVE_IMAGE_MODEL` 或 `GATEWAY_LIVE_VIDEO_MODEL`。测试发送实际请求并消耗上游额度。
+[部署配置](deploy/README.md) · [架构设计](docs/native-provider-architecture.md) · [测试与发布验收](docs/integration-validation.md) · [源码来源](native/SOURCES.md)

@@ -1,11 +1,14 @@
-.PHONY: ui build test
-ui:
-	cd frontend && npm ci && npm run build
-	mkdir -p backend/internal/app/ui/dist
-	cp -R frontend/dist/. backend/internal/app/ui/dist/
+.PHONY: build test start deploy
 
-build: ui
-	cd backend && go build ./cmd/gateway ./cmd/gatewayctl
+build:
+	npm ci --prefix native
+	npm run build
 
 test:
-	cd backend && go test ./...
+	npm test
+
+start:
+	npm start
+
+deploy:
+	npm run deploy

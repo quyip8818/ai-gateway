@@ -1,0 +1,97 @@
+/** Anthropic Messages API surface — the shape we expose to clients. */
+
+export type AnthropicTextBlock = { type: "text"; text: string };
+
+export type AnthropicThinkingBlock = { type: "thinking"; thinking: string; signature?: string };
+
+export type AnthropicImageBlock = {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string } | { type: "url"; url: string };
+};
+
+export type AnthropicToolUseBlock = {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+};
+
+export type AnthropicToolResultBlock = {
+  type: "tool_result";
+  tool_use_id: string;
+  content?: string | AnthropicContentBlock[];
+  is_error?: boolean;
+};
+
+export type AnthropicContentBlock =
+  | AnthropicTextBlock
+  | AnthropicThinkingBlock
+  | AnthropicImageBlock
+  | AnthropicToolUseBlock
+  | AnthropicToolResultBlock;
+
+export type AnthropicMessage = {
+  role: "user" | "assistant" | string;
+  content: string | AnthropicContentBlock[];
+};
+
+export type AnthropicTool = {
+  name: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+};
+
+export type AnthropicSystem = string | Array<{ type: string; text?: string }>;
+
+/**
+ * Extended thinking, as the Messages API asks for it.
+ *
+ * Kiro has no such parameter: its own client gets visible reasoning by handing
+ * the model a `thinking` tool and rendering what it writes there. So this is a
+ * switch rather than a budget — see `src/kiro/thinking.ts` for the bridge, and
+ * note that `budget_tokens` is accepted and ignored because clients send it.
+ */
+export type AnthropicThinkingConfig = {
+  /**
+   * `adaptive` is as real as `enabled` and is what recent Claude models take:
+   * ara sends `{ type: "adaptive", display: "summarized" }` for every model
+   * past 4.7 and only falls back to `enabled` with a budget for the older ones.
+   * Matching on `enabled` alone silently ignored the request — thinking was on
+   * everywhere and reached here as nothing at all.
+   */
+  type: "enabled" | "adaptive" | "disabled";
+  budget_tokens?: number;
+  display?: string;
+};
+
+export type MessagesRequest = {
+  model: string;
+  messages: AnthropicMessage[];
+  system?: AnthropicSystem;
+  tools?: AnthropicTool[];
+  thinking?: AnthropicThinkingConfig;
+  max_tokens?: number;
+  stream?: boolean;
+  temperature?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
+
+export type AnthropicUsage = {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
+export type MessagesResponse = {
+  id: string;
+  type: "message";
+  role: "assistant";
+  model: string;
+  content: AnthropicContentBlock[];
+  stop_reason: StopReason | null;
+  stop_sequence: null;
+  usage: AnthropicUsage;
+};

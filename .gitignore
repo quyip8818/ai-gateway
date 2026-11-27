@@ -8,9 +8,6 @@ secrets/
 
 # Dependencies and build output
 node_modules/
-frontend/dist/
-backend/internal/app/ui/dist/*
-!backend/internal/app/ui/dist/placeholder.html
 
 # Runtime data and logs
 data/
@@ -20,3 +17,6 @@ logs/
 # IDE and OS files
 .idea/
 .DS_Store
+
+native/dist/
+native/console.js
