@@ -46,6 +46,11 @@ export function registerAdmin(
     await accounts.setEnabled(ctx.params.id, enabled);
     ctx.status = 204;
   });
+  router.put('/admin/v1/accounts/:id/settings/browser-transport', jsonBody, async (ctx) => {
+    if (!isUUID(ctx.params.id)) throw new AppError(404, 'account_not_found');
+    await accounts.setBrowserTransport(ctx.params.id, objectBody(ctx).value);
+    ctx.status = 204;
+  });
   router.put('/admin/v1/accounts/:id/credential', jsonBody, async (ctx) => {
     const { cookie } = objectBody(ctx);
     if (!isUUID(ctx.params.id) || typeof cookie !== 'string') throw new AppError(400, 'invalid_account');

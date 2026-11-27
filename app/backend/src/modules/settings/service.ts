@@ -1,5 +1,5 @@
-import type { AdminSettings, RuntimeSetting } from '../../../../../shared/contracts/settings.ts';
-import { AppError } from '../../domain.ts';
+import type { RuntimeSetting } from '../../../../../shared/contracts/settings.ts';
+import { AppError, type Provider } from '../../domain.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 
 type Choice = Pick<RuntimeSetting, 'value' | 'source'>;
@@ -7,18 +7,13 @@ type Choice = Pick<RuntimeSetting, 'value' | 'source'>;
 export interface SettingDefinition extends Pick<RuntimeSetting, 'id' | 'title' | 'provider' | 'environment_variable' | 'options'> {
   defaultValue: string;
   environmentValue?: string;
-  apply(value: string): void;
   getStatus?(): Promise<RuntimeSetting['status']>;
 }
 
-export async function createSettings(
-  store: Pick<Store, 'readSettingOverrides' | 'writeSettingOverride'>,
-  service: AdminSettings['service'],
+export function createSettings(
+  store: Pick<Store, 'readSettingOverride' | 'writeSettingOverride'>,
   definitions: readonly SettingDefinition[],
 ) {
-  const stored = new Map((await store.readSettingOverrides()).map(({ id, value }) => [id, value]));
-  const active = new Map<string, Choice>();
-
   function effective(definition: SettingDefinition, override: string | null | undefined): Choice {
     if (typeof override === 'string' && definition.options.some((option) => option.value === override)) {
       return { value: override, source: 'console' };
@@ -27,45 +22,39 @@ export async function createSettings(
     return { value: definition.defaultValue, source: 'default' };
   }
 
-  function apply(definition: SettingDefinition, override: string | null | undefined) {
-    const choice = effective(definition, override);
-    definition.apply(choice.value);
-    active.set(definition.id, choice);
+  function find(id: string) {
+    const definition = definitions.find((item) => item.id === id);
+    if (!definition) throw new AppError(404, 'setting_not_found');
+    return definition;
   }
 
-  for (const definition of definitions) apply(definition, stored.get(definition.id));
+  async function read(definition: SettingDefinition) {
+    return effective(definition, await store.readSettingOverride(definition.id));
+  }
 
-  async function snapshot(): Promise<AdminSettings> {
-    const runtime = await Promise.all(definitions.map(async (definition) => ({
+  async function list(provider: Provider): Promise<RuntimeSetting[]> {
+    return Promise.all(definitions.filter((definition) => definition.provider === provider).map(async (definition) => ({
       id: definition.id,
       title: definition.title,
       provider: definition.provider,
       environment_variable: definition.environment_variable,
       options: definition.options,
-      ...active.get(definition.id)!,
+      ...await read(definition),
       status: await definition.getStatus?.(),
     })));
-    return { service, runtime };
   }
 
-  // Keep writes and their in-process effects ordered in the same way.
-  let pending: Promise<unknown> = Promise.resolve();
-  function update(id: string, value: unknown) {
-    const definition = definitions.find((item) => item.id === id);
-    if (!definition) throw new AppError(404, 'setting_not_found');
+  async function update(provider: Provider, id: string, value: unknown) {
+    const definition = find(id);
+    if (definition.provider !== provider) throw new AppError(404, 'setting_not_found');
     if (value !== null && (typeof value !== 'string' || !definition.options.some((option) => option.value === value))) {
       throw new AppError(400, 'invalid_setting_value');
     }
-    const work = pending.then(async () => {
-      await store.writeSettingOverride(id, value);
-      apply(definition, value);
-      return snapshot();
-    });
-    pending = work.catch(() => undefined);
-    return work;
+    await store.writeSettingOverride(id, value);
+    return list(provider);
   }
 
-  return { list: () => pending.then(snapshot), update };
+  return { list, update, resolve: (id: string) => read(find(id)) };
 }
 
-export type Settings = Awaited<ReturnType<typeof createSettings>>;
+export type Settings = ReturnType<typeof createSettings>;

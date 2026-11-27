@@ -1,16 +1,18 @@
 import type pg from 'pg';
+import type { BrowserTransportMode } from '../../../../../shared/contracts/jimeng-settings.ts';
 
 export function createRecords(db: pg.Pool) {
   return {
     listAccounts: async (provider?: string) => (await db.query(
-        `SELECT id,provider,kind,label,enabled,expires_at,cooldown_until
+        `SELECT id,provider,kind,label,enabled,expires_at,cooldown_until,browser_transport
          FROM provider_accounts WHERE deleted_at IS NULL AND ($1::text IS NULL OR provider=$1) ORDER BY created_at DESC,id`,
         [provider ?? null])).rows,
     listKeys: async () => (await db.query(
         `SELECT id,label,prefix,created_at,revoked_at,scopes,expires_at,providers
          FROM api_keys ORDER BY created_at DESC`)).rows,
     listAttempts: async () => (await db.query(
-        `SELECT id,model,operation,status,created_at,finished_at,usage
+        `SELECT id,model,operation,status,created_at,finished_at,usage,
+          usage->'credit_receipt'->'credits_used' AS credits_used
       FROM request_attempts ORDER BY created_at DESC LIMIT 100`)).rows,
     listVideos: async () => (await db.query(
         `SELECT * FROM video_jobs
@@ -18,6 +20,10 @@ export function createRecords(db: pg.Pool) {
     listModels: async () => (await db.query(
         `SELECT DISTINCT m.public_id AS id,m.operation,m.capabilities FROM account_models m
       JOIN provider_accounts a ON a.id=m.account_id WHERE a.enabled ORDER BY 1,2`)).rows,
+    setAccountBrowserTransport: (id: string, value: BrowserTransportMode | null) => db.query(
+      "UPDATE provider_accounts SET browser_transport=$2 WHERE id=$1 AND provider='jimeng' AND deleted_at IS NULL",
+      [id, value],
+    ),
     setAccountEnabled: (id: string, enabled: boolean) => db.query(
       'UPDATE provider_accounts SET enabled=$2 WHERE id=$1 AND deleted_at IS NULL', [id, enabled],
     ),

@@ -1,5 +1,6 @@
 import { setTimeout as wait } from "node:timers/promises";
-import { jimengSignal } from "../../context.ts";
+import { createHash } from "node:crypto";
+import { jimengSignal, jimengTransportMode } from "../../context.ts";
 import _ from "lodash";
 import axios, { AxiosRequestConfig, AxiosResponse } from "axios";
 
@@ -8,6 +9,7 @@ import EX from "@/api/consts/exceptions.ts";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import browserTransport from "@/lib/browser-transport.ts";
+import { startupBrowserTransportMode } from "../../settings.ts";
 import { ACCOUNT_INFO_PATH, decodeImageXResult, decodeJimengResponse } from "./response.ts";
 
 // 默认的AgentID
@@ -152,7 +154,7 @@ export async function request(
   uri: string,
   refreshToken: string,
   options: AxiosRequestConfig = {},
-  policy: { retry?: boolean; logPayload?: boolean; model?: string } = {}
+  policy: { retry?: boolean; logPayload?: boolean; model?: string; browserFallback?: boolean } = {}
 ) {
   const signal = jimengSignal(options.signal as AbortSignal | undefined);
   signal?.throwIfAborted();
@@ -188,12 +190,14 @@ export async function request(
   }
 
   // 浏览器传输：流式响应（对话类接口）保持直连，其余接口按配置决定是否走浏览器
-  const canUseBrowser = browserTransport.enabled && options.responseType != "stream";
+  const mode = jimengTransportMode() ?? startupBrowserTransportMode;
+  const canUseBrowser = mode !== "off" && options.responseType != "stream";
   const riskControlKey = policy.model ? `${uri}#${policy.model}` : getRiskControlKey(uri, options.data);
-  const useBrowser = canUseBrowser && browserTransport.shouldUse(riskControlKey);
+  const session = canUseBrowser ? createHash("sha256").update(refreshToken).digest("hex") : "";
+  const useBrowser = canUseBrowser && (mode === "always" || browserTransport.isRequired(session, riskControlKey));
   const browserRequest = {
     method, url: fullUrl, params: requestParams, headers, data: options.data,
-    cookiePairs: parseCookiePairs(cookie),
+    session, signal, cookiePairs: parseCookiePairs(cookie),
     timeout: options.timeout || undefined,
     retry: policy.retry,
   };
@@ -258,7 +262,7 @@ export async function request(
         // 上游风控拒绝：该接口需要浏览器端签名，改用浏览器传输重试一次
         const riskControl =
           error instanceof APIException && error.compare(EX.API_RISK_CONTROL_REJECTED);
-        if (!riskControl || !canUseBrowser || useBrowser || browserTransport.mode != "auto")
+        if (!riskControl || !canUseBrowser || useBrowser || mode !== "auto" || policy.browserFallback === false)
           throw error;
         logger.warn(
           `模型链路 ${riskControlKey} 被上游风控拦截，改用浏览器传输重试；也可设置 JIMENG_BROWSER_TRANSPORT=always 直接走浏览器`
@@ -272,7 +276,7 @@ export async function request(
           }
           // 传输确实可用才记住该模型链路，避免把不可用的浏览器传输固化下来
           const result = readResult(browserResponse);
-          browserTransport.markRequired(riskControlKey);
+          browserTransport.markRequired(session, riskControlKey);
           return result;
         } catch (browserError) {
           // 浏览器传输抛出业务错误时透传；基础设施错误（缺依赖、浏览器启动失败等）保留原始风控错误

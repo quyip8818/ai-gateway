@@ -10,7 +10,10 @@ CREATE TABLE provider_accounts (
   kind text NOT NULL, label text NOT NULL, secret bytea NOT NULL, enabled boolean NOT NULL DEFAULT true,
   expires_at timestamptz, cooldown_until timestamptz, concurrency integer NOT NULL DEFAULT 1 CHECK(concurrency BETWEEN 1 AND 100),
   last_used_at timestamptz, credential_version bigint NOT NULL DEFAULT 0,
-  refresh_until timestamptz, deleted_at timestamptz, created_at timestamptz NOT NULL DEFAULT now()
+  refresh_until timestamptz, deleted_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
+  browser_transport text CHECK (
+    browser_transport IS NULL OR (provider = 'jimeng' AND browser_transport IN ('off', 'auto', 'always'))
+  )
 );
 CREATE INDEX provider_accounts_by_product ON provider_accounts(provider,created_at DESC,id);
 CREATE TABLE account_credential_fingerprints (

@@ -4,7 +4,7 @@ import APIException from "@/lib/exceptions/APIException.ts";
 import EX from "@/api/consts/exceptions.ts";
 import util from "@/lib/util.ts";
 import { request, uploadFile } from "./core.ts";
-import { checkGenerationCredits, type ObserveGenerationBalance } from "./generation-credits.ts";
+import { checkGenerationCredits } from "./generation-credits.ts";
 import logger from "@/lib/logger.ts";
 import { JimengModelConfig, resolveImageModelConfig } from "./models.ts";
 import { IMAGE_DIMENSIONS, closestImageResolution, type ImageSize } from "./image-size.ts";
@@ -145,7 +145,6 @@ interface ImageGenerationOptions {
   filePath?: string;
   filePaths?: string[];
   n?: number;
-  onBalanceBefore?: ObserveGenerationBalance;
 }
 
 export async function generateImages(
@@ -160,7 +159,6 @@ export async function generateImages(
     filePath,
     filePaths = [],
     n = 1,
-    onBalanceBefore,
   }: ImageGenerationOptions,
   refreshToken: string
 ) {
@@ -225,7 +223,7 @@ export async function generateImages(
   logger.info(`   🖼️ 请求张数: ${n}`);
   logger.info(`═══════════════════════════════════════════════════════════\n`);
 
-  await checkGenerationCredits(refreshToken, onBalanceBefore);
+  await checkGenerationCredits(refreshToken);
 
   const componentId = util.uuid();
 
@@ -412,7 +410,7 @@ export async function generateImages(
   // 输出完整请求数据用于调试
   logger.info(`📤 [请求数据] ${JSON.stringify(requestData)}`);
 
-  const { aigc_data } = await request(
+  const submission = await request(
     "post",
     "/mweb/v1/aigc_draft/generate",
     refreshToken,
@@ -427,7 +425,7 @@ export async function generateImages(
       data: requestData,
     }
   );
-  const historyId = aigc_data.history_record_id;
+  const historyId = submission?.aigc_data?.history_record_id;
   if (!historyId)
     throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录ID不存在");
 
@@ -558,11 +556,12 @@ export async function generateImages(
         },
       }
     );
-    if (!result[historyId])
+    const record = result?.[historyId];
+    if (!record)
       throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录不存在");
-    status = result[historyId].status;
-    failCode = result[historyId].fail_code;
-    item_list = result[historyId].item_list;
+    status = record.status;
+    failCode = record.fail_code;
+    item_list = Array.isArray(record.item_list) ? record.item_list : [];
     // 每5次轮询输出一次状态，避免日志过多
     if (retryCount % 5 === 0 || item_list?.length > 0) {
       logger.info(`⏳ [轮询] 第${retryCount}次 | 状态码: ${status} | 结果数: ${item_list?.length || 0}`);
@@ -580,11 +579,10 @@ export async function generateImages(
   if (item_list.length > n) {
     logger.info(`[生成张数] model=${modelName} historyId=${historyId} requested=${n} upstream=${item_list.length} returned=${n}`);
   }
-  return item_list.map((item) => {
-    if (!item?.image?.large_images?.[0]?.image_url)
-      return item?.common_attr?.cover_url || null;
-    return item.image.large_images[0].image_url;
-  }).slice(0, n);
+  const urls = item_list.slice(0, n)
+    .map((item) => item?.image?.large_images?.[0]?.image_url || item?.common_attr?.cover_url)
+    .filter((url): url is string => typeof url === "string" && url.length > 0);
+  return { urls, submitId };
 }
 
 /**
@@ -596,7 +594,7 @@ export async function generateImagesWithRetry(
   prompt: string,
   options: ImageGenerationOptions,
   refreshToken: string
-): Promise<string[]> {
+) {
   const modelConfig = await resolveImageModelConfig(_model, refreshToken);
   const count = options.n ?? 1;
   const allowedCounts = modelConfig.supportedGenerateCounts;

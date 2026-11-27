@@ -24,7 +24,7 @@ export function generation(
     model: unknown,
     operation: string,
     run: (account: Awaited<ReturnType<Accounts['select']>>) => Promise<{
-      value: T;
+      value: T | Promise<T>;
       status?: string;
       usage?: unknown;
       stream?: ReturnType<typeof monitorSSE>;
@@ -35,18 +35,20 @@ export function generation(
     const id = randomUUID();
     const after = async (status: string, usage: unknown = null) => {
       try {
-        await store.finishAttempt(id, status, usage);
+        await store.finishAttempt(id, status, await usage);
       } finally {
         await accounts.release(account.lease);
       }
     };
 
     let result;
+    let value;
     try {
       await store.startAttempt(id, key.id, account.id, operation, model);
       result = await run(account);
+      value = await result.value;
     } catch (error) {
-      await after('failed').catch(() => {});
+      await after('failed', result?.usage).catch(() => {});
       throw error;
     }
 
@@ -62,7 +64,7 @@ export function generation(
     } else {
       await after(result.status ?? 'succeeded', result.usage);
     }
-    return result.value;
+    return value;
   }
 
   async function text(key, input, operation: string, headers: Headers, signal: AbortSignal) {
@@ -133,22 +135,28 @@ export function generation(
     }
     const model = input.model ?? 'jimeng/jimeng-image-5.0-lite';
     return attempt(key, model, 'image', async (account) => {
-      const c = await accounts.currentCredential(account, signal);
-      const urls = await jimengImages.generate(
-        account.upstream_id, input.prompt, { size, n, filePaths: references }, c.token, signal,
-      );
-      if (!urls.length) throw new AppError(502, 'image_generation_failed');
-      const data = [];
-      for (const url of urls) {
-        const bytes = await jimengMediaFiles.downloadImage(url, 24 * 1024 * 1024, signal);
-        const mime = imageMime(bytes);
-        if (!mime) throw new AppError(502, 'invalid_media_content');
-        const id = await media.save(key.id, model, mime, bytes);
-        data.push(
-          format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) },
-        );
+      const { account: current, credential } = await accounts.credentialSnapshot(account.id, signal);
+      const { urls, usage } = await accounts.withProviderSettings(current, signal, () => jimengImages.generate(
+        account.upstream_id, input.prompt, { size, n, filePaths: references }, credential.token, signal,
+      ));
+
+      async function deliver() {
+        if (!urls.length) throw new AppError(502, 'image_generation_failed');
+        const data = [];
+        for (const url of urls) {
+          const bytes = await jimengMediaFiles.downloadImage(url, 24 * 1024 * 1024, signal);
+          const mime = imageMime(bytes);
+          if (!mime) throw new AppError(502, 'invalid_media_content');
+          const id = await media.save(key.id, model, mime, bytes);
+          data.push(
+            format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) },
+          );
+        }
+        const { credit_receipt } = await usage;
+        return { created: Math.floor(Date.now() / 1000), data, usage: { credits_used: credit_receipt.credits_used } };
       }
-      return { value: { created: Math.floor(Date.now() / 1000), data } };
+
+      return { value: deliver(), usage };
     });
   }
 

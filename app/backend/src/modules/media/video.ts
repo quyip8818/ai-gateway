@@ -81,8 +81,10 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
     let resolution, ratio, seconds, size;
     if (recastDuration === undefined) {
       const signal = AbortSignal.timeout(30_000);
-      const credential = await accounts.currentCredential(target, signal);
-      const config = await provider.specs(target.upstream_id, credential.token, signal);
+      const { account, credential } = await accounts.credentialSnapshot(target.id, signal);
+      const config = await accounts.withProviderSettings(account, signal, () =>
+        provider.specs(target.upstream_id, credential.token, signal),
+      );
       resolution = desiredSize?.resolution ?? config.defaultResolution;
       ratio = desiredSize?.ratio ?? '16:9';
       seconds = requestedSeconds ?? config.defaultDuration;
@@ -149,8 +151,9 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
         }
         lease = claimed.lease;
       }
-      const credential = await accounts.currentCredential(account, signal);
-      if (job.status === 'queued') {
+      const { account: current, credential } = await accounts.credentialSnapshot(job.account_id, signal);
+      const state = await accounts.withProviderSettings(current, signal, async () => {
+        if (job.status !== 'queued') return provider.inspect(job.id, job.history_id, credential.token, signal);
         const payload = store.readVideoPayload(job.id, job.payload);
         const request = await provider.prepare(job, payload, credential.token, signal);
         if (request.size !== undefined) await store.setVideoSize(job.id, job.lease_version, request.size);
@@ -159,9 +162,8 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
         job.status = 'submitting';
         const history = await request.submit();
         await update('in_progress', 2, history);
-        return;
-      }
-      const state = await provider.inspect(job.id, job.history_id, credential.token, signal);
+      });
+      if (!state) return;
       if (state.state === 'failed') {
         await update('failed', 0, null, 'upstream_video_failed');
         return;

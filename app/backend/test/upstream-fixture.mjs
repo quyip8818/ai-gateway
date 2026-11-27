@@ -8,6 +8,8 @@ import { crc32 } from '../../../dist/providers/kiro/kiro/event-stream.js';
 const originalFetch = globalThis.fetch;
 const png = Buffer.from('89504e470d0a1a0a', 'hex');
 export const jimengCaptures = [];
+let imageCreditRecord;
+let imageCreditLookups = 0;
 const recastSource = '11111111-1111-1111-1111-111111111111';
 const video = Buffer.from('00000014667479706d70343200000000', 'hex');
 
@@ -227,7 +229,19 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
         result = { access_key_id: 'fixture', secret_access_key: 'fixture', session_token: 'fixture' };
       else if (url.pathname.endsWith('/user_credit'))
         result = { credit: { gift_credit: 100, purchase_credit: 0, vip_credit: 0 } };
-      else if (url.pathname.endsWith('/aigc_draft/generate')) {
+      else if (url.pathname.endsWith('/user_credit_history')) {
+        assert.deepEqual(JSON.parse(config.data), { cursor: '0', count: 20, history_type: 2, need_with_hold: false });
+        process.stdout.write('[fixture jimeng ledger request]\n');
+        if (++imageCreditLookups === 3) {
+          return { data: {}, status: 503, statusText: 'Unavailable', headers: {}, config };
+        }
+        result = { records: [
+          { submit_id: 'another-task', history_type: 2, status: 'Checked', amount: -99 },
+          ...(imageCreditRecord?.status === 'Checked'
+            ? [{ ...imageCreditRecord, status: 'Init', amount: 8 }] : []),
+          ...(imageCreditRecord ? [imageCreditRecord] : []),
+        ], has_more: true };
+      } else if (url.pathname.endsWith('/aigc_draft/generate')) {
         const submission = JSON.parse(config.data);
         const id = submission.submit_id;
         const contract = jimengSubmission(config);
@@ -249,6 +263,12 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
           assert.equal(draft.component_list[0].abilities.scenario.scene, 'object_swap');
         }
         if (config.data.includes('fixture edit')) assert.match(config.data, /fixture-image-uri/);
+        if (config.data.includes('fixture image') || config.data.includes('fixture edit')) {
+          imageCreditRecord = {
+            submit_id: id, history_type: 2, status: config.data.includes('fixture image') ? 'Checked' : 'Init',
+            amount: '-6', sub_histories: [{ actual_credit_amount: 6 }],
+          };
+        }
         if (!process.env.GATEWAY_CAPTURE_JIMENG && config.data.includes('fixture lost submission')) {
           appendFileSync(process.env.GATEWAY_TEST_SUBMISSIONS, id + '\n');
           throw Object.assign(new Error('fixture upstream received the request'), { code: 'ECONNRESET' });

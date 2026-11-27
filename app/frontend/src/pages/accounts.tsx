@@ -1,3 +1,4 @@
+import { ProviderSettings } from './provider-settings.tsx';
 import type { AdminApi, RunAction } from '../api/admin.ts';
 import React, { useState, type FormEvent } from 'react';
 import { credentialKinds, providers, type Provider } from '../../../../shared/contracts/providers.ts';
@@ -146,8 +147,9 @@ function AddAccount({
   );
 }
 
-export function AccountsPage({ provider, busy, api, act, onProvider }: {
+export function AccountsPage({ provider, revision, busy, api, act, onProvider }: {
   provider: Provider;
+  revision: number;
   busy: boolean;
   api: AdminApi;
   act: RunAction;
@@ -168,6 +170,7 @@ export function AccountsPage({ provider, busy, api, act, onProvider }: {
           </button>
         ))}
       </div>
+      <ProviderSettings provider={provider} api={api} revision={revision} act={act} busy={busy} />
       <AddAccount key={provider} provider={provider} busy={busy} api={api} act={act} />
     </>
   );

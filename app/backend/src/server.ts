@@ -42,15 +42,10 @@ const store = openStore(config.databaseUrl, crypto);
 const files = openFiles(resolve(config.mediaDirectory));
 await store.initialize();
 await files.initialize();
-const settings = await createSettings(store, {
-  host: config.host,
-  port: config.port,
-  public_origin: config.publicBaseUrl ? new URL(config.publicBaseUrl).origin : null,
-  media_directory: config.mediaDirectory,
-}, [jimengBrowserSetting(process.env)]);
+const settings = createSettings(store, [jimengBrowserSetting(process.env)]);
 const identity = createIdentity(store, config);
 const catalog = createCatalog(store);
-const accounts = createAccounts(store, crypto, config.codexRedirectUri);
+const accounts = createAccounts(store, crypto, config.codexRedirectUri, settings);
 const media = createMediaAssets(store, files, crypto);
 const videos = createVideoService(store, accounts, files);
 const generate = generation(store, accounts, media);

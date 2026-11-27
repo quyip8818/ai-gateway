@@ -1,3 +1,4 @@
+import { readImageCredits } from './api/controllers/credit-history.ts';
 import { request } from './api/controllers/core.ts';
 import { generateImagesWithRetry } from './api/controllers/images.ts';
 import { openAIImageSize } from './api/controllers/image-size.ts';
@@ -17,7 +18,15 @@ import { downloadGeneratedImage, downloadPublicMedia, loadImageReference } from 
 export const jimengImages = {
   size: openAIImageSize,
   async generate(model: string, prompt: string, options: Parameters<typeof generateImagesWithRetry>[2], token: string, signal: AbortSignal) {
-    return withJimengRequest(signal, () => generateImagesWithRetry(model, prompt, options, token));
+    return withJimengRequest(signal, async () => {
+      const { urls, submitId } = await generateImagesWithRetry(model, prompt, options, token);
+      const usage = readImageCredits(token, submitId).then((credits_used) => {
+        const credit_receipt = { submit_id: submitId, credits_used };
+        console.info('[jimeng image credits ledger]', JSON.stringify(credit_receipt));
+        return { credit_receipt };
+      });
+      return { urls, usage };
+    });
   },
 };
 

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { JimengAccountSettings } from './provider-settings.tsx';
 import type { AdminApi, Row, RunAction } from '../api/admin.ts';
 
 const icons = {
@@ -27,7 +28,7 @@ function IconButton({ icon, label, disabled, onClick }: {
 }
 
 export function AccountActions({ row, api, act, busy }: { row: Row; api: AdminApi; act: RunAction; busy: boolean }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState<'cookie' | 'settings'>();
   const endpoint = 'accounts/' + row.id;
   return (
     <>
@@ -37,20 +38,32 @@ export function AccountActions({ row, api, act, busy }: { row: Row; api: AdminAp
         <IconButton icon="reload" label="重新验证并刷新模型" disabled={busy}
           onClick={() => void act(() => api.json(endpoint + '/reload', 'POST'), '账号和模型已刷新')} />
         {row.provider === 'jimeng' && row.kind === 'cookie' && (
-          <IconButton icon="edit" label="更改 Cookie" disabled={busy} onClick={() => setEditing((value) => !value)} />
+          <IconButton icon="edit" label="更改 Cookie" disabled={busy} onClick={() => setEditing(editing === 'cookie' ? undefined : 'cookie')} />
+        )}
+        {row.provider === 'jimeng' && (
+          <button type="button" className="quiet" disabled={busy} aria-expanded={editing === 'settings'}
+            onClick={() => setEditing(editing === 'settings' ? undefined : 'settings')}>账号设置</button>
         )}
         <IconButton icon="remove" label="删除账号" disabled={busy} onClick={() => {
           if (confirm(`删除账号「${row.label ?? row.id}」？未完成的视频任务将标记为失败。`))
             void act(() => api.json(endpoint, 'DELETE'), '账号已删除');
         }} />
       </div>
-      {editing && (
-        <form className="account-cookie-edit" onSubmit={(event) => {
+      {editing === 'settings' && (
+        <JimengAccountSettings value={row.browser_transport} disabled={busy}
+          onCancel={() => setEditing(undefined)}
+          onSave={(value) => void act(async () => {
+            await api.json(endpoint + '/settings/browser-transport', 'PUT', { value });
+            setEditing(undefined);
+          }, '账号设置已保存')} />
+      )}
+      {editing === 'cookie' && (
+        <form className="account-edit" onSubmit={(event) => {
           event.preventDefault();
           const cookie = new FormData(event.currentTarget).get('cookie');
           void act(async () => {
             await api.json(endpoint + '/credential', 'PUT', { cookie });
-            setEditing(false);
+            setEditing(undefined);
           }, 'Cookie 已更新');
         }}>
           <label>
@@ -60,7 +73,7 @@ export function AccountActions({ row, api, act, busy }: { row: Row; api: AdminAp
           </label>
           <div className="actions">
             <button type="submit" disabled={busy}>验证并保存</button>
-            <button type="button" className="quiet" disabled={busy} onClick={() => setEditing(false)}>取消</button>
+            <button type="button" className="quiet" disabled={busy} onClick={() => setEditing(undefined)}>取消</button>
           </div>
         </form>
       )}

@@ -4,10 +4,15 @@ import type { GatewayCrypto } from '../../infrastructure/crypto.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { discover, normalizeCredential, normalizeJimengCredential, refreshCredential, codexAuthorization } from '../../providers/registry.ts';
 
+import type { Settings } from '../settings/service.ts';
+import { isBrowserTransportMode, jimengBrowserSettingId, type BrowserTransportMode } from '../../../../../shared/contracts/jimeng-settings.ts';
+import { startupBrowserTransportMode } from '../../providers/jimeng/settings.ts';
+import { withJimengRequest } from '../../providers/jimeng/context.ts';
+
 type AccountRepository = Pick<Store,
   'importAccount' | 'findAccount' | 'syncAccountModels' | 'deleteAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
   'saveAuthorization' | 'consumeAuthorization' | 'selectAccount' | 'claimAccount' | 'release' |
-  'listAccounts' | 'setAccountEnabled'
+  'listAccounts' | 'setAccountEnabled' | 'setAccountBrowserTransport'
 >;
 
 function accountValidationError(error: unknown) {
@@ -16,7 +21,26 @@ function accountValidationError(error: unknown) {
     : new AppError(422, 'account_validation_failed', 'Check the credential and its provider authorization');
 }
 
-export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCrypto, 'unseal'>, redirectUri: string) {
+export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCrypto, 'unseal'>, redirectUri: string, settings: Pick<Settings, 'resolve'>) {
+  async function withProviderSettings<T>(
+    account: { provider: Provider; browser_transport?: BrowserTransportMode | null },
+    signal: AbortSignal,
+    run: () => Promise<T>,
+  ) {
+    if (account.provider !== 'jimeng') return run();
+    const value = account.browser_transport ?? (await settings.resolve(jimengBrowserSettingId)).value;
+    return withJimengRequest(signal, run, isBrowserTransportMode(value) ? value : startupBrowserTransportMode);
+  }
+
+  async function setBrowserTransport(id: string, value: unknown) {
+    if (value !== null && !isBrowserTransportMode(value)) {
+      throw new AppError(400, 'invalid_setting_value');
+    }
+    if ((await store.setAccountBrowserTransport(id, value)).rowCount) return;
+    await existingAccount(id);
+    throw new AppError(400, 'account_setting_unsupported');
+  }
+
   async function addAccount(provider: Provider, kind: string, label: string, raw: unknown, signal: AbortSignal) {
     let imported: ReturnType<typeof normalizeCredential>;
     try {
@@ -85,10 +109,10 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
     await store.syncAccountModels(account, models);
   }
 
-  async function discoverModels(account: { provider: Provider; kind: string }, credential: unknown, signal: AbortSignal) {
+  async function discoverModels(account: { provider: Provider; kind: string; browser_transport?: BrowserTransportMode | null }, credential: unknown, signal: AbortSignal) {
     let models;
     try {
-      models = await discover(account.provider, account.kind, credential, signal);
+      models = await withProviderSettings(account, signal, () => discover(account.provider, account.kind, credential, signal));
     } catch (error) {
       throw accountValidationError(error);
     }
@@ -141,8 +165,8 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
   }
 
   return {
-    list: store.listAccounts, setEnabled,
-    addAccount, currentCredential, beginAuthorization, completeAuthorization, reload, replaceCookie, remove,
+    list: store.listAccounts, setEnabled, setBrowserTransport, withProviderSettings,
+    addAccount, currentCredential, credentialSnapshot, beginAuthorization, completeAuthorization, reload, replaceCookie, remove,
     find: store.findAccount, select: store.selectAccount, claim: store.claimAccount, release: store.release,
   };
 }

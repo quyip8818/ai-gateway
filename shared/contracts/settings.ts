@@ -12,13 +12,3 @@ export interface RuntimeSetting {
   source: SettingSource;
   status?: readonly { label: string; value: string }[];
 }
-
-export interface AdminSettings {
-  service: {
-    host: string;
-    port: number;
-    public_origin: string | null;
-    media_directory: string;
-  };
-  runtime: RuntimeSetting[];
-}

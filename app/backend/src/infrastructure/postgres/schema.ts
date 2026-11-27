@@ -1,7 +1,7 @@
 import pg from 'pg';
 import schema from './initial.sql';
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const SCHEMA_LOCK = 'SELECT pg_advisory_xact_lock(683191340)';
 
@@ -20,7 +20,7 @@ export async function initializeSchema(client: pg.PoolClient) {
 
   const { rows: [marker] } = await client.query('SELECT version FROM gateway_schema WHERE singleton');
   if (marker?.version !== SCHEMA_VERSION) {
-    throw new Error(`The database schema version is unsupported (found ${marker?.version ?? 'none'}, expected ${SCHEMA_VERSION}). Use an empty database or schema, or run pnpm reset to clear the gateway tables.`);
+    throw new Error(`The database schema version is unsupported (found ${marker?.version ?? 'none'}, expected ${SCHEMA_VERSION}). Use an empty database or schema, or run npm run reset to clear the gateway tables.`);
   }
 }
 

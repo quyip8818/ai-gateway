@@ -1,3 +1,4 @@
+import type { Browser, BrowserContext, Page } from "playwright-core";
 import logger from "./logger.ts";
 
 
@@ -15,21 +16,12 @@ import logger from "./logger.ts";
  *   JIMENG_BROWSER_TRANSPORT=auto     # 仅在上游风控拦截时改用浏览器重试（默认）
  *   JIMENG_BROWSER_TRANSPORT=always   # 所有请求都走浏览器
  */
-export const BROWSER_TRANSPORT_MODES = ["off", "auto", "always"] as const;
-export type BrowserTransportMode = typeof BROWSER_TRANSPORT_MODES[number];
-
-/** 默认传输模式 */
-export const DEFAULT_BROWSER_TRANSPORT_MODE: BrowserTransportMode = "auto";
-
-export function normalizeBrowserTransportMode(value?: string) {
-  const mode = value?.trim().toLowerCase();
-  return BROWSER_TRANSPORT_MODES.find((item) => item === mode);
-}
-
 /**
  * 浏览器传输请求参数
  */
 export interface BrowserRequestOptions {
+  session: string;
+  signal?: AbortSignal;
   /** 请求方法 */
   method: string;
   /** 完整请求地址 */
@@ -117,7 +109,6 @@ const inPageRequest = async (payload: {
 
 class BrowserTransport {
 
-  private currentMode: BrowserTransportMode;
   private dependencyAvailable?: Promise<boolean>;
   /** 是否无头模式 */
   private readonly headless: boolean;
@@ -139,11 +130,12 @@ class BrowserTransport {
   private readonly launchArgs: string[];
 
   /** 浏览器实例 */
-  private browser: any = null;
+  private browser: Browser | null = null;
   /** 浏览器上下文 */
-  private context: any = null;
+  private context: BrowserContext | null = null;
+  private session: string | undefined;
   /** 页面实例 */
-  private page: any = null;
+  private page: Page | null = null;
   private appliedCookies = new Map<string, string>();
   /** 空闲关闭定时器 */
   private idleTimer: NodeJS.Timeout | null = null;
@@ -168,27 +160,6 @@ class BrowserTransport {
       .split(",")
       .map(item => item.trim())
       .filter(Boolean);
-    this.currentMode = normalizeBrowserTransportMode(env.JIMENG_BROWSER_TRANSPORT) ?? DEFAULT_BROWSER_TRANSPORT_MODE;
-  }
-
-  /** 当前传输模式 */
-  get mode() {
-    return this.currentMode;
-  }
-
-  /** 传输层是否启用 */
-  get enabled() {
-    return this.currentMode !== "off";
-  }
-
-  setMode(mode: BrowserTransportMode) {
-    if (this.currentMode === mode) return;
-    this.currentMode = mode;
-    if (mode === "off") {
-      this.browserRequiredKeys.clear();
-      // Let requests that already hold a place in the queue finish first.
-      this.queue = this.queue.then(() => this.close());
-    }
   }
 
   async status() {
@@ -199,25 +170,12 @@ class BrowserTransport {
     };
   }
 
-  /**
-   * 判断某个请求是否应该走浏览器
-   *
-   * @param key 请求标识（接口路径 + 上游模型，见 core.ts 的 getRiskControlKey）
-   */
-  shouldUse(key: string) {
-    if (!this.enabled) return false;
-    return this.mode === "always" || this.browserRequiredKeys.has(key);
+  isRequired(session: string, key: string) {
+    return this.browserRequiredKeys.has(session + ':' + key);
   }
 
-  /**
-   * 标记某个请求需要浏览器签名
-   *
-   * @param key 请求标识（接口路径 + 上游模型）
-   */
-  markRequired(key: string) {
-    if (!this.enabled || this.browserRequiredKeys.has(key)) return;
-    this.browserRequiredKeys.add(key);
-    logger.info(`模型链路 ${key} 已标记为需要浏览器签名，后续请求将直接使用浏览器传输`);
+  markRequired(session: string, key: string) {
+    this.browserRequiredKeys.add(session + ':' + key);
   }
 
   /**
@@ -226,8 +184,9 @@ class BrowserTransport {
    * @param options 请求参数
    */
   async request(options: BrowserRequestOptions): Promise<BrowserResponse> {
-    // 串行执行：多账号场景下切换 cookie 需要独占页面
+    // 串行管理浏览器上下文，切换账号时关闭上一账号的页面。
     const task = this.queue.then(async () => {
+      options.signal?.throwIfAborted();
       this.clearIdleTimer();
       try {
         return await this.execute(options);
@@ -245,6 +204,7 @@ class BrowserTransport {
     const browser = this.browser;
     this.browser = null;
     this.context = null;
+    this.session = undefined;
     this.page = null;
     this.appliedCookies.clear();
     if (!browser) return;
@@ -260,8 +220,9 @@ class BrowserTransport {
    * 执行请求
    */
   private async execute(options: BrowserRequestOptions): Promise<BrowserResponse> {
-    const page = await this.ensurePage();
-    await this.applyCookies(options.cookiePairs);
+    const page = await this.ensurePage(options.session);
+    options.signal?.throwIfAborted();
+    await this.applyCookies(page.context(), options.cookiePairs);
 
     logger.info(`[浏览器传输] ${options.method.toUpperCase()} ${options.url}`);
     const payload = {
@@ -272,14 +233,17 @@ class BrowserTransport {
       data: options.data ?? null,
       timeout: options.timeout ?? this.requestTimeout,
     };
+    options.signal?.throwIfAborted();
     let result = await page.evaluate(inPageRequest, payload);
 
     // 浏览器或页面异常时重启一次
     if (result.status === 0 && result.error && options.retry !== false) {
+      options.signal?.throwIfAborted();
       logger.warn(`[浏览器传输] 请求失败，重建浏览器后重试: ${result.error}`);
       await this.close();
-      const retryPage = await this.ensurePage();
-      await this.applyCookies(options.cookiePairs);
+      const retryPage = await this.ensurePage(options.session);
+      await this.applyCookies(retryPage.context(), options.cookiePairs);
+      options.signal?.throwIfAborted();
       result = await retryPage.evaluate(inPageRequest, payload);
     }
 
@@ -304,11 +268,15 @@ class BrowserTransport {
   /**
    * 确保页面可用
    */
-  private async ensurePage() {
-    if (this.page && !this.page.isClosed()) return this.page;
-    await this.close();
+  private async ensurePage(session: string) {
+    if (this.session === session && this.page && !this.page.isClosed()) return this.page;
     try {
-      await this.launch();
+      if (this.browser && !this.browser.isConnected()) await this.close();
+      await this.context?.close();
+      this.appliedCookies.clear();
+      this.browser ??= await this.launch();
+      await this.openPage(this.browser);
+      this.session = session;
     } catch (error) {
       await this.close();
       throw error;
@@ -318,17 +286,17 @@ class BrowserTransport {
   }
 
   /**
-   * 启动浏览器并装载即梦页面
+   * 启动浏览器
    */
   private async launch() {
-    let playwright: any;
+    let playwright: typeof import("playwright-core");
     try {
       playwright = await import("playwright-core");
     } catch {
       throw new Error("[浏览器传输] 缺少依赖 playwright-core，请先执行 npm i playwright-core");
     }
 
-    const launchOptions: any = {
+    const launchOptions: Parameters<typeof playwright.chromium.launch>[0] = {
       headless: this.headless,
       args: [
         "--disable-blink-features=AutomationControlled",
@@ -342,24 +310,23 @@ class BrowserTransport {
 
     logger.info(`浏览器传输层启动中（headless=${this.headless}, channel=${this.channel || "自动"}）...`);
     try {
-      this.browser = await playwright.chromium.launch(launchOptions);
+      return await playwright.chromium.launch(launchOptions);
     } catch (error: any) {
       if (this.channel || this.executablePath) throw error;
       // 未指定通道时，依次尝试本机 Chrome / Edge
       logger.warn(`默认通道启动失败（${error?.message || error}），尝试使用本机 Edge`);
-      this.browser = await playwright.chromium.launch({ ...launchOptions, channel: "msedge" });
+      return playwright.chromium.launch({ ...launchOptions, channel: "msedge" });
     }
+  }
 
-    this.context = await this.browser.newContext({
+  private async openPage(browser: Browser) {
+    this.context = await browser.newContext({
       userAgent: this.userAgent,
       viewport: VIEWPORT,
       locale: "zh-CN",
       timezoneId: "Asia/Shanghai",
     });
     this.page = await this.context.newPage();
-    this.page.on("close", () => {
-      this.page = null;
-    });
 
     await this.page.goto(this.pageUrl, { waitUntil: "domcontentloaded", timeout: this.navigationTimeout });
     await this.page.waitForTimeout(APP_READY_DELAY);
@@ -380,17 +347,17 @@ class BrowserTransport {
    *
    * @param cookiePairs cookie 键值对
    */
-  private async applyCookies(cookiePairs: Array<[string, string]>) {
+  private async applyCookies(context: BrowserContext, cookiePairs: Array<[string, string]>) {
     const next = new Map(cookiePairs);
     if (next.size === this.appliedCookies.size
       && [...next].every(([name, value]) => this.appliedCookies.get(name) === value)) return;
 
     const scope = { domain: ".jianying.com", path: "/" };
     for (const name of this.appliedCookies.keys()) {
-      if (!next.has(name)) await this.context.clearCookies({ name, ...scope });
+      if (!next.has(name)) await context.clearCookies({ name, ...scope });
     }
     if (next.size) {
-      await this.context.addCookies([...next].map(([name, value]) => ({ name, value, ...scope })));
+      await context.addCookies([...next].map(([name, value]) => ({ name, value, ...scope })));
     }
     this.appliedCookies = next;
   }

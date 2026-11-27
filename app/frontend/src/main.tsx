@@ -8,14 +8,13 @@ import { AccountsPage } from './pages/accounts.tsx';
 import { KeysPage } from './pages/keys.tsx';
 import { LoginPage } from './pages/login.tsx';
 import { MediaPage } from './pages/media.tsx';
-import { SettingsPage } from './pages/settings.tsx';
 import { ResourceTable } from './components/resource-table.tsx';
 import { createAdminApi, type Row } from './api/admin.ts';
 
 import { navigation } from './labels.ts';
 
 const navIcons: Record<keyof typeof navigation, IconName> = {
-  Accounts: 'accounts', Keys: 'key', Models: 'layers', Requests: 'activity', Media: 'image', Settings: 'settings',
+  Accounts: 'accounts', Keys: 'key', Models: 'layers', Requests: 'activity', Media: 'image',
 };
 
 function Console() {
@@ -48,7 +47,7 @@ function Console() {
     return () => check.abort();
   }, [api]);
 
-  const table = page === 'Media' || page === 'Settings' ? undefined : page;
+  const table = page === 'Media' ? undefined : page;
   const endpoint = table === 'Accounts' ? 'accounts?provider=' + provider : table?.toLowerCase();
 
   useEffect(() => {
@@ -134,7 +133,7 @@ function Console() {
         </header>
         <Feedback notice={notice} />
         {page === 'Accounts' && (
-          <AccountsPage provider={provider} busy={busy} api={api} act={act} onProvider={(item) => {
+          <AccountsPage provider={provider} revision={revision} busy={busy} api={api} act={act} onProvider={(item) => {
             setProvider(item);
             setNotice(null);
           }} />
@@ -143,7 +142,6 @@ function Console() {
           <KeysPage api={api} act={act} busy={busy} issuedKey={key} setKey={setKey} onCopyError={() => setNotice({ kind: 'error', message: '请手动复制密钥' })} />
         )}
         {page === 'Media' && <MediaPage api={api} revision={revision} />}
-        {page === 'Settings' && <SettingsPage api={api} revision={revision} act={act} busy={busy} />}
         {table && endpoint && <ResourceTable page={table} provider={provider} tabRows={rows[endpoint] ?? []}
           loading={!rows[endpoint] && !notice} busy={busy} api={api} act={act} />}
       </main>

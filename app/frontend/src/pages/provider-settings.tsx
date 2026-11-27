@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
-import type { AdminSettings, RuntimeSetting, SettingSource } from '../../../../shared/contracts/settings.ts';
+import { isBrowserTransportMode, jimengBrowserOptions, jimengBrowserSettingId, type BrowserTransportMode } from '../../../../shared/contracts/jimeng-settings.ts';
+import type { Provider } from '../../../../shared/contracts/providers.ts';
+import type { RuntimeSetting, SettingSource } from '../../../../shared/contracts/settings.ts';
 import type { AdminApi, RunAction } from '../api/admin.ts';
 import { useAdminResource } from '../api/use-admin-resource.ts';
 import { ResourceError } from '../components/feedback.tsx';
@@ -11,26 +13,27 @@ const sources: Record<SettingSource, string> = {
 };
 
 const optionHelp: Record<string, Record<string, string>> = {
-  'jimeng.browser_transport': {
+  [jimengBrowserSettingId]: {
     off: '通过服务端发送请求。',
     auto: '按请求选择传输方式。',
     always: '通过浏览器发送即梦请求。',
   },
 };
 
-export function SettingsPage({ api, revision, act, busy }: {
+export function ProviderSettings({ provider, api, revision, act, busy }: {
+  provider: Provider;
   api: AdminApi;
   revision: number;
   act: RunAction;
   busy: boolean;
 }) {
-  const { data, error, loading, refreshing, retry } = useAdminResource<AdminSettings>(api, 'settings', revision);
-  const service = data?.service;
+  const endpoint = 'providers/' + provider + '/settings';
+  const { data: settings, error, loading, refreshing, retry } = useAdminResource<RuntimeSetting[]>(api, endpoint, revision);
 
   function save(setting: RuntimeSetting, value: string | null) {
     void act(
-      () => api.json('settings/' + encodeURIComponent(setting.id), 'PUT', { value }),
-      value === null ? '已恢复启动配置' : '配置已生效',
+      () => api.json(endpoint + '/' + encodeURIComponent(setting.id), 'PUT', { value }),
+      value === null ? '已恢复部署默认值' : '供应商默认设置已保存',
     );
   }
 
@@ -38,31 +41,15 @@ export function SettingsPage({ api, revision, act, busy }: {
     <>
       {error && <ResourceError message={error} retry={retry} />}
       {loading && <p className="loading-panel" role="status">正在读取配置…</p>}
-      {data && (
-        <div className="settings-grid" aria-busy={refreshing}>
-          <div className="settings-runtime">
-            {data.runtime.map((setting) => (
-              <SettingCard key={JSON.stringify([setting.id, setting.value, setting.source])}
-                setting={setting} disabled={busy || refreshing} saving={busy}
-                onSave={(value) => save(setting, value)} />
-            ))}
-          </div>
-          {service && (
-            <section className="settings-startup panel">
-              <div className="settings-heading">
-                <span className="section-icon"><Icon name="server" size={20} /></span>
-                <div><h2>启动配置</h2><p>随服务启动读取</p></div>
-              </div>
-              <dl className="setting-list">
-                <dt>监听主机</dt><dd><code>{service.host}</code></dd>
-                <dt>监听端口</dt><dd><code>{service.port}</code></dd>
-                <dt>对外入口</dt><dd>{service.public_origin ?? '使用请求地址'}</dd>
-                <dt>媒体目录</dt><dd><code>{service.media_directory}</code></dd>
-              </dl>
-            </section>
-          )}
+      {settings?.length ? (
+        <div className="settings-runtime" aria-busy={refreshing}>
+          {settings.map((setting) => (
+            <SettingCard key={JSON.stringify([setting.id, setting.value, setting.source])}
+              setting={setting} disabled={busy || refreshing} saving={busy}
+              onSave={(value) => save(setting, value)} />
+          ))}
         </div>
-      )}
+      ) : null}
     </>
   );
 }
@@ -81,8 +68,8 @@ function SettingCard({ setting, disabled, saving, onSave }: {
       <div className="settings-heading">
         <span className="section-icon"><Icon name="settings" size={20} /></span>
         <div>
-          <h2>{setting.title}</h2>
-          {setting.provider && <p>{labels[setting.provider]}</p>}
+          <h2>{setting.title}默认值</h2>
+          {setting.provider && <p>{labels[setting.provider]}账号可继承或单独覆盖</p>}
         </div>
         <span className="status-pill status-positive"><Icon name="check" size={14} /> 当前为{effective}</span>
       </div>
@@ -125,5 +112,34 @@ function SettingCard({ setting, disabled, saving, onSave }: {
         </div>
       </form>
     </section>
+  );
+}
+
+
+export function JimengAccountSettings({ value, disabled, onSave, onCancel }: {
+  value: unknown;
+  disabled: boolean;
+  onSave: (value: BrowserTransportMode | null) => void;
+  onCancel: () => void;
+}) {
+  return (
+    <form className="account-edit" onSubmit={(event) => {
+      event.preventDefault();
+      const selected = new FormData(event.currentTarget).get('browser_transport');
+      if (selected === '') onSave(null);
+      else if (isBrowserTransportMode(selected)) onSave(selected);
+    }}>
+      <label>
+        浏览器传输
+        <select name="browser_transport" defaultValue={isBrowserTransportMode(value) ? value : ''} disabled={disabled}>
+          <option value="">继承供应商默认值</option>
+          {jimengBrowserOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+      <div className="actions">
+        <button type="submit" disabled={disabled}>保存</button>
+        <button type="button" className="quiet" disabled={disabled} onClick={onCancel}>取消</button>
+      </div>
+    </form>
   );
 }

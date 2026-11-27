@@ -92,7 +92,7 @@ test(
     await json('/v1/models', undefined, undefined, 401);
     await json('/openai/v1/models', undefined, undefined, 404);
     await json('/admin/v1/accounts', undefined, undefined, 401);
-    await json('/admin/v1/settings', undefined, undefined, 401);
+    await json('/admin/v1/providers/jimeng/settings', undefined, undefined, 401);
     await json('/admin/v1/media', undefined, undefined, 401);
     await json('/admin/v1/session', undefined, { username, password: 'wrong-password' }, 401);
     await json('/admin/v1/session', undefined, { username, password }, 403, { origin: 'https://foreign.example' });
@@ -104,9 +104,11 @@ test(
     assert.equal((await http('/admin/v1/session', admin)).status, 204);
     await json('/admin/v1/accounts', admin.split('=')[1], undefined, 401);
     const settingId = 'jimeng.browser_transport';
-    const settingPath = '/admin/v1/settings/' + settingId;
+    const settingsPath = '/admin/v1/providers/jimeng/settings';
+    const settingPath = settingsPath + '/' + settingId;
     const readSetting = async () =>
-      (await json('/admin/v1/settings', admin)).runtime.find((item) => item.id === settingId);
+      (await json(settingsPath, admin)).find((item) => item.id === settingId);
+    assert.deepEqual(await json('/admin/v1/providers/claude/settings', admin), []);
     const setSetting = async (value) => http(settingPath, admin, { value }, {}, 'PUT');
     assert.equal((await readSetting()).source, 'env');
     assert.equal((await readSetting()).value, 'off');
@@ -115,7 +117,7 @@ test(
     assert.equal((await rejected.json()).error.code, 'invalid_setting_value');
     const applied = await setSetting('always');
     assert.equal(applied.status, 200);
-    assert.equal((await applied.json()).runtime[0].value, 'always');
+    assert.equal((await applied.json())[0].value, 'always');
     assert.equal((await readSetting()).source, 'console');
     assert.equal((await setSetting(null)).status, 200);
     assert.equal((await readSetting()).value, 'off');
@@ -131,6 +133,20 @@ test(
     const duplicateAccount = concurrent.find((response) => response.status === 409);
     assert.equal((await duplicateAccount.json()).error.code, 'duplicate_account_credential');
 
+    const [browserAccount] = await json('/admin/v1/accounts?provider=jimeng', admin);
+    const browserAccountPath = '/admin/v1/accounts/' + browserAccount.id;
+    const browserSetting = browserAccountPath + '/settings/browser-transport';
+    assert.equal(browserAccount.browser_transport, null);
+    assert.equal((await http(browserSetting, undefined, { value: 'off' }, {}, 'PUT')).status, 401);
+    assert.equal((await http(browserSetting, admin, { value: 'invalid' }, {}, 'PUT')).status, 400);
+    assert.equal((await http(browserSetting, admin, { value: 'off' }, {}, 'PUT')).status, 204);
+    assert.equal((await setSetting('always')).status, 200);
+    assert.equal((await http(browserAccountPath + '/reload', admin, undefined, {}, 'POST')).status, 204);
+    assert.equal((await json('/admin/v1/accounts?provider=jimeng', admin))[0].browser_transport, 'off');
+    assert.equal((await setSetting('off')).status, 200);
+    assert.equal((await http(browserSetting, admin, { value: null }, {}, 'PUT')).status, 204);
+    assert.equal((await json('/admin/v1/accounts?provider=jimeng', admin))[0].browser_transport, null);
+
     for (const entry of [
       ['codex', 'oauth', { accessToken: 'test-codex-token', accountId: 'fixture' }],
       ['claude', 'api-key', 'test-claude-token'],
@@ -143,6 +159,12 @@ test(
         201,
       );
     }
+    const [claudeAccount] = await json('/admin/v1/accounts?provider=claude', admin);
+    const unsupportedSetting = await http(
+      '/admin/v1/accounts/' + claudeAccount.id + '/settings/browser-transport', admin, { value: 'off' }, {}, 'PUT',
+    );
+    assert.equal(unsupportedSetting.status, 400);
+    assert.equal((await unsupportedSetting.json()).error.code, 'account_setting_unsupported');
     const kiroImports = await Promise.all([{ refreshToken: 'test-kiro-refresh' }, { refresh_token: 'test-kiro-refresh' }].map((credential) =>
       http('/admin/v1/accounts', admin, {
         provider: 'kiro', kind: 'desktop', credential, label: 'kiro',
@@ -341,11 +363,25 @@ test(
       response_format: 'b64_json',
     });
     assert.equal(Buffer.from(image.data[0].b64_json, 'base64').toString('hex'), '89504e470d0a1a0a');
+    assert.deepEqual(image.usage, { credits_used: 6 });
+    const billingLines = server.output().split('\n');
+    assert.equal(billingLines.filter((line) => line === '[fixture jimeng ledger request]').length, 1);
+    const imageAttempt = (await json('/admin/v1/requests', admin)).find((attempt) => attempt.operation === 'image');
+    assert.equal(imageAttempt.status, 'succeeded');
+    assert.equal(imageAttempt.credits_used, 6);
+    const receipt = imageAttempt.usage.credit_receipt;
+    assert.match(receipt.submit_id, /^[a-f0-9-]{36}$/);
+    assert.equal(receipt.credits_used, 6);
+    const receiptPrefix = '[jimeng image credits ledger] ';
+    const loggedReceipt = billingLines.find((line) => line.startsWith(receiptPrefix));
+    assert.ok(loggedReceipt);
+    assert.deepEqual(JSON.parse(loggedReceipt.slice(receiptPrefix.length)), receipt);
     const edited = await json('/v1/images/edits', key, {
       prompt: 'fixture edit',
       images: [{ image_url: 'data:image/png;base64,iVBORw0KGgo=' }],
     });
     const download = await fetch(edited.data[0].url);
+    assert.deepEqual(edited.usage, { credits_used: null });
     assert.equal(download.status, 200);
     assert.equal(Buffer.from(await download.arrayBuffer()).toString('base64'), 'iVBORw0KGgo=');
     const form = new FormData();
@@ -358,7 +394,10 @@ test(
       body: form,
     });
     assert.equal(multipartEdit.status, 200);
-    assert.equal((await multipartEdit.json()).data[0].b64_json, 'iVBORw0KGgo=');
+    const multipartImage = await multipartEdit.json();
+    assert.equal(multipartImage.data[0].b64_json, 'iVBORw0KGgo=');
+    assert.deepEqual(multipartImage.usage, { credits_used: null });
+    assert.equal(server.output().split('\n').filter((line) => line === '[fixture jimeng ledger request]').length, 3);
     const invalidURL = new URL(edited.data[0].url);
     invalidURL.searchParams.set('expires', '1');
     assert.equal((await fetch(invalidURL)).status, 401);
@@ -500,7 +539,7 @@ test(
     assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
-    for (const version of [3, 4, 5, 6, 99]) {
+    for (const version of [3, 4, 5, 6, 7, 99]) {
       await db.query(`UPDATE ${schema}.gateway_schema SET version=$1`, [version]);
       server = start();
       const [exitCode] = await server.closed;

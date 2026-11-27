@@ -21,11 +21,15 @@ export function registerAdminResources(
   media: MediaAssets,
   settings: Settings,
 ) {
-  router.get('/admin/v1/settings', async (ctx) => {
-    ctx.body = await settings.list();
+  router.get('/admin/v1/providers/:provider/settings', async (ctx) => {
+    const { provider } = ctx.params;
+    if (!isProvider(provider)) throw new AppError(404, 'setting_not_found');
+    ctx.body = await settings.list(provider);
   });
-  router.put('/admin/v1/settings/:id', jsonBody, async (ctx) => {
-    ctx.body = await settings.update(ctx.params.id, objectBody(ctx).value);
+  router.put('/admin/v1/providers/:provider/settings/:id', jsonBody, async (ctx) => {
+    const { provider, id } = ctx.params;
+    if (!isProvider(provider)) throw new AppError(404, 'setting_not_found');
+    ctx.body = await settings.update(provider, id, objectBody(ctx).value);
   });
 
   router.get('/admin/v1/media', async (ctx) => {

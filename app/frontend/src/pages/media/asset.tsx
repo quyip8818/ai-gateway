@@ -17,6 +17,7 @@ function mediaTitle(asset: MediaAsset) {
 
 export function MediaCard({ asset, onPreview }: { asset: MediaAsset; onPreview: () => void }) {
   const [failed, setFailed] = useState(false);
+  const [frameReady, setFrameReady] = useState(false);
   const title = mediaTitle(asset);
   const video = asset.type === 'video';
   const image = asset.type === 'image';
@@ -25,16 +26,23 @@ export function MediaCard({ asset, onPreview }: { asset: MediaAsset; onPreview: 
     <article className="media-card">
       <button type="button" className={video ? 'media-preview video-cover' : 'media-preview'}
         aria-label={'预览 ' + title} onClick={onPreview}>
-        {image && !failed
-          ? <img src={adminMediaUrl(asset.id)} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
-          : <span className="preview-symbol"><Icon name={video ? 'play' : 'image'} size={28} /></span>}
-        <span className="media-type"><Icon name={video ? 'video' : 'image'} size={13} />{typeLabel}</span>
+        {image && !failed && (
+          <img src={adminMediaUrl(asset.id)} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} />
+        )}
+        {video && !failed && (
+          <video src={adminMediaUrl(asset.id) + '#t=0.001'} preload="metadata" muted playsInline
+            aria-hidden="true" onLoadedData={() => setFrameReady(true)} onError={() => setFailed(true)} />
+        )}
+        {(failed || (!image && !frameReady)) && (
+          <span className="preview-symbol" aria-hidden="true"><Icon name={video ? 'video' : 'image'} size={28} /></span>
+        )}
+        {video && <span className="preview-expand preview-play" aria-hidden="true"><Icon name="play" size={16} /></span>}
         {image && !failed && <span className="preview-expand"><Icon name="expand" size={16} /></span>}
       </button>
       <div className="media-info">
         <div className="media-copy">
           <button type="button" className="media-title" title={title} onClick={onPreview}>{title}</button>
-          <p>{labels[asset.provider] ?? asset.provider}<span aria-hidden="true"> · </span>
+          <p><span className="media-type">{typeLabel}</span><span aria-hidden="true"> · </span>
             <time dateTime={asset.created_at}>{formatDate(asset.created_at)}</time>
           </p>
         </div>

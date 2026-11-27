@@ -89,15 +89,13 @@ function MediaLibrary({ api, revision, filter, setFilter }: BrowseProps & {
           </EmptyMedia>
         )}
       </div>
-      {data && (data.total_pages > 1 || data.page > 1) && (
+      {data && (data.total > 0 || data.page > 1) && (
         <div className="pagination" aria-label="媒体分页">
+          <button className="quiet icon-text" type="button" disabled={data.page <= 1 || refreshing}
+            onClick={() => movePage(data.page - 1)}><Icon name="chevronLeft" size={16} />上一页</button>
           <span>第 {data.page} / {data.total_pages} 页</span>
-          <div className="actions">
-            <button className="quiet icon-text" type="button" disabled={data.page <= 1 || refreshing}
-              onClick={() => movePage(data.page - 1)}><Icon name="chevronLeft" size={16} />上一页</button>
-            <button className="quiet icon-text" type="button" disabled={data.page >= data.total_pages || refreshing}
-              onClick={() => movePage(data.page + 1)}>下一页<Icon name="chevronRight" size={16} /></button>
-          </div>
+          <button className="quiet icon-text" type="button" disabled={data.page >= data.total_pages || refreshing}
+            onClick={() => movePage(data.page + 1)}>下一页<Icon name="chevronRight" size={16} /></button>
         </div>
       )}
       {preview && <MediaPreview asset={preview} onClose={() => setPreview(undefined)} />}

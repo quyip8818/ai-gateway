@@ -1,5 +1,5 @@
 export const navigation = {
-  Accounts: '上游账号', Keys: 'API 密钥', Models: '模型', Requests: '请求记录', Media: '媒体资源', Settings: '系统配置',
+  Accounts: '上游账号', Keys: 'API 密钥', Models: '模型', Requests: '请求记录', Media: '媒体资源',
 } as const;
 
 export const labels: Record<string, string> = {
@@ -14,6 +14,9 @@ export const labels: Record<string, string> = {
 
 export function cellText(field: string, value: unknown) {
   if (value == null) return '—';
+  if (field === 'credits_used') {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('zh-CN') : '—';
+  }
   if (field === 'enabled') return value ? '已启用' : '已停用';
   if (field === 'providers' && Array.isArray(value)) {
     return value.map((item) => labels[item] ?? item).join('、');
@@ -44,6 +47,7 @@ export const columns = {
     ['model', '模型'],
     ['operation', '操作'],
     ['status', '状态'],
+    ['credits_used', '消耗 Credits'],
     ['created_at', '开始时间'],
   ],
 };
@@ -67,6 +71,7 @@ export const errorMessages: Record<string, string> = {
   account_not_found: '账号不存在或已删除。',
   account_has_pending_videos: '该账号仍有未完成的视频任务，请在任务结束后更换 Cookie。',
   account_changed: '账号凭证已更改，请刷新后重试。',
+  account_setting_unsupported: '该供应商不支持此账号设置。',
   account_cookie_unsupported: '该账号不支持更改 Cookie。',
   invalid_account: '请检查账号信息，名称最多 100 个字符',
   invalid_oauth_callback: '回调地址无效',

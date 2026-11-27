@@ -2,9 +2,9 @@ import type pg from 'pg';
 
 export function createSettingsRepository(db: pg.Pool) {
   return {
-    readSettingOverrides: async () => (await db.query<{ id: string; value: string }>(
-      'SELECT id,value FROM runtime_settings',
-    )).rows,
+    readSettingOverride: async (id: string) => (await db.query<{ value: string }>(
+      'SELECT value FROM runtime_settings WHERE id=$1', [id],
+    )).rows[0]?.value,
     writeSettingOverride: (id: string, value: string | null) => value === null
       ? db.query('DELETE FROM runtime_settings WHERE id=$1', [id])
       : db.query(
