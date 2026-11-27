@@ -5,30 +5,45 @@ import type { Store } from '../../infrastructure/postgres/store.ts';
 import { discover, normalizeCredential, refreshCredential, codexAuthorization } from '../../providers/registry.ts';
 
 type AccountRepository = Pick<Store,
-  'insertAccount' | 'findAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
+  'importAccount' | 'findAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
   'saveAuthorization' | 'consumeAuthorization' | 'selectAccount' | 'claimAccount' | 'release' |
   'listAccounts' | 'setAccountEnabled'
 >;
 
+function accountValidationError(error: unknown) {
+  return error instanceof AppError
+    ? error
+    : new AppError(422, 'account_validation_failed', 'Check the credential and its provider authorization');
+}
+
 export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCrypto, 'unseal'>, redirectUri: string) {
   async function addAccount(provider: Provider, kind: string, label: string, raw: unknown, signal: AbortSignal) {
-    let credential;
-    let models;
+    let imported: ReturnType<typeof normalizeCredential>;
     try {
-      credential = normalizeCredential(provider, kind, raw);
-      if (
-        credential.refreshToken &&
-        (!credential.accessToken || provider === 'kiro' || Date.parse(credential.expiresAt) <= Date.now())
-      ) {
-        credential = await refreshCredential(provider, kind, credential, signal);
-      }
-      models = await discover(provider, kind, credential, signal);
+      imported = normalizeCredential(provider, kind, raw);
     } catch (error) {
-      if (error instanceof AppError) throw error;
-      throw new AppError(422, 'account_validation_failed', 'Check the credential and its provider authorization');
+      throw accountValidationError(error);
     }
-    if (!models.length) throw new AppError(422, 'no_provider_models');
-    return store.insertAccount(provider, kind, label, credential, models);
+
+    const refreshToken = 'refreshToken' in imported && typeof imported.refreshToken === 'string' &&
+      (!imported.accessToken || provider === 'kiro' ||
+        (typeof imported.expiresAt === 'string' && Date.parse(imported.expiresAt) <= Date.now()))
+      ? imported.refreshToken
+      : undefined;
+
+    return store.importAccount(provider, kind, label, imported, refreshToken, async () => {
+      signal.throwIfAborted();
+      let credential;
+      let models;
+      try {
+        credential = refreshToken ? await refreshCredential(provider, kind, imported, signal) : imported;
+        models = await discover(provider, kind, credential, signal);
+      } catch (error) {
+        throw accountValidationError(error);
+      }
+      if (!models.length) throw new AppError(422, 'no_provider_models');
+      return { credential, models };
+    });
   }
 
   async function currentCredential(account: { id: string }, signal: AbortSignal) {
@@ -47,7 +62,7 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
         const next = await refreshCredential(
           row.provider, row.kind, value, AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
         );
-        const updated = await store.saveRefresh(row.id, row.credential_version, next);
+        const updated = await store.saveRefresh(row.id, row.provider, row.credential_version, next);
         if (updated.rowCount) return next;
       } catch {
         await store.failRefresh(row.id, row.credential_version);

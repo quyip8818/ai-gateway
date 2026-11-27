@@ -56,7 +56,7 @@ function AddAccount({
     const form = event.currentTarget;
     const fields = new FormData(form);
     void act(async () => {
-      const label = fields.get('label');
+      const label = fields.get('label') ?? '';
       if (startingOAuth) {
         const flow = await api.json<{ url: string }>('codex/authorize', 'POST', { label });
         setAuthURL(flow.url);
@@ -134,15 +134,10 @@ function AddAccount({
             />
           </label>
         )}
-        {!(browser && authURL) && (
-          <details>
-            <summary>自定义名称（可选）</summary>
-            <label>
-              账号名称
-              <input name="label" maxLength={100} disabled={busy} />
-            </label>
-          </details>
-        )}
+        <label>
+          账号名称（可选）
+          <input name="label" maxLength={100} disabled={busy || Boolean(browser && authURL)} />
+        </label>
         <button disabled={busy}>
           {busy ? '处理中…' : startingOAuth ? '创建授权链接' : browser ? '完成授权' : '验证并添加'}
         </button>

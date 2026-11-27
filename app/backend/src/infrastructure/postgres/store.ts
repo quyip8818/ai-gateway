@@ -3,14 +3,16 @@ import { createVideoRepository } from './videos.ts';
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { GatewayCrypto } from '../crypto.ts';
 import pg from 'pg';
-import schema from './initial.sql';
+import { initializeSchema } from './schema.ts';
+import { createAccountFingerprints } from './account-fingerprints.ts';
+import type { CredentialTokens } from '../../providers/credentials.ts';
 
+import type { DiscoveredModel } from '../../providers/registry.ts';
 import { AppError, type Provider } from '../../domain.ts';
-
-const SCHEMA_VERSION = 3;
 
 export function openStore(connection: string, { seal, unseal, digest }: GatewayCrypto) {
   const db = new pg.Pool({ connectionString: connection, max: 20 });
+  const fingerprints = createAccountFingerprints(digest);
   async function tx<T>(run: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     const client = await db.connect();
     try {
@@ -24,23 +26,6 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     } finally {
       client.release();
     }
-  }
-
-  async function initialize() {
-    return tx(async (client) => {
-      await client.query('SELECT pg_advisory_xact_lock(683191340)');
-      const exists = (await client.query("SELECT to_regclass('gateway_schema') IS NOT NULL AS value")).rows[0]
-        .value;
-      if (!exists) {
-        await client.query(schema);
-        await client.query('INSERT INTO gateway_schema(version) VALUES($1)', [SCHEMA_VERSION]);
-        return;
-      }
-      const { rows: [marker] } = await client.query('SELECT version FROM gateway_schema WHERE singleton');
-      if (marker?.version !== SCHEMA_VERSION) {
-        throw new Error(`The database schema version is unsupported (found ${marker?.version ?? 'none'}, expected ${SCHEMA_VERSION}).`);
-      }
-    });
   }
 
   function sessionDigest(scope: string, session: string) {
@@ -101,9 +86,24 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     return { ...key, token };
   }
 
-  async function insertAccount(provider: Provider, kind: string, label: string, credential, models) {
+  async function importAccount(
+    provider: Provider,
+    kind: string,
+    label: string,
+    imported: CredentialTokens,
+    refreshToken: string | undefined,
+    prepare: () => Promise<{
+      credential: CredentialTokens & { expiresAt?: unknown };
+      models: DiscoveredModel[];
+    }>,
+  ) {
+    const importedHashes = fingerprints.hashes(provider, imported);
     const id = randomUUID();
-    await tx(async (client) => {
+
+    async function insert(client: pg.PoolClient, { credential, models }: Awaited<ReturnType<typeof prepare>>) {
+      const hashes = [...importedHashes, ...fingerprints.hashes(provider, credential)];
+      await fingerprints.lock(client, provider);
+      await fingerprints.assertAvailable(client, hashes);
       await client.query(
         `INSERT INTO provider_accounts(id,provider,kind,label,secret,expires_at)
         VALUES($1,$2,$3,$4,$5,$6)`,
@@ -116,6 +116,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
           credential.expiresAt ?? null,
         ],
       );
+      await fingerprints.record(client, id, hashes);
       for (const model of models) {
         await client.query(`INSERT INTO account_models VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, [
           id,
@@ -125,8 +126,20 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
           model.capabilities,
         ]);
       }
-    });
-    return { id, model_count: models.length };
+      return { id, model_count: models.length };
+    }
+
+    if (refreshToken) {
+      return tx(async (client) => {
+        await fingerprints.claimImport(client, provider, refreshToken);
+        await fingerprints.assertAvailable(client, importedHashes);
+        return insert(client, await prepare());
+      });
+    }
+
+    await fingerprints.assertAvailable(db, importedHashes);
+    const prepared = await prepare();
+    return tx((client) => insert(client, prepared));
   }
 
   const allowed = `a.enabled AND EXISTS
@@ -218,12 +231,17 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
     );
   }
 
-  function saveRefresh(id: string, version: number, next) {
-    return db.query(
-      `UPDATE provider_accounts SET secret=$1,expires_at=$2,
-      refresh_until=NULL,credential_version=credential_version+1 WHERE id=$3 AND credential_version=$4`,
-      [seal(id, next), next.expiresAt, id, version],
-    );
+  function saveRefresh(id: string, provider: Provider, version: number, next) {
+    return tx(async (client) => {
+      await fingerprints.lock(client, provider);
+      const updated = await client.query(
+        `UPDATE provider_accounts SET secret=$1,expires_at=$2,
+        refresh_until=NULL,credential_version=credential_version+1 WHERE id=$3 AND credential_version=$4`,
+        [seal(id, next), next.expiresAt, id, version],
+      );
+      if (updated.rowCount) await fingerprints.record(client, id, fingerprints.hashes(provider, next));
+      return updated;
+    });
   }
 
   function failRefresh(id: string, version: number) {
@@ -252,13 +270,13 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
   return {
     health: () => db.query('SELECT 1'),
     close: () => db.end(),
-    initialize,
+    initialize: () => tx((client) => initializeSchema(client, unseal, fingerprints)),
     createAdminSession,
     hasAdminSession,
     endAdminSession,
     getKey,
     createKey,
-    insertAccount,
+    importAccount,
     findAccount,
     claimRefresh,
     saveRefresh,

@@ -1,3 +1,4 @@
+export type CredentialTokens = { token?: unknown; accessToken?: unknown; refreshToken?: unknown };
 export type CredentialInput = Record<string, unknown>;
 
 export function normalizeApiKey(c: CredentialInput) {

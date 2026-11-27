@@ -68,6 +68,8 @@ export const errorMessages: Record<string, string> = {
   no_provider_models: '该账号没有可用模型',
   invalid_provider: '请选择支持的产品',
   invalid_key: '请输入密钥名称并选择可调用的产品',
+  account_credential_import_in_progress: '该凭证正在添加，请稍后刷新账号列表。',
+  duplicate_account_credential: '该凭证已添加，请使用现有账号。',
   invalid_account: '请检查账号信息，名称最多 100 个字符',
   invalid_oauth_callback: '回调地址无效',
   oauth_flow_expired: '授权已过期，请重新发起',

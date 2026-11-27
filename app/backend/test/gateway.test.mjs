@@ -100,10 +100,17 @@ test(
     const admin = cookie.split(';')[0];
     assert.equal((await http('/admin/v1/session', admin)).status, 204);
     await json('/admin/v1/accounts', admin.split('=')[1], undefined, 401);
+    const concurrent = await Promise.all(
+      ['test-jimeng-token', 'Cookie: a=b; sessionid=test-jimeng-token'].map((credential) =>
+        http('/admin/v1/accounts', admin, { provider: 'jimeng', kind: 'cookie', credential }),
+      ),
+    );
+    assert.deepEqual(concurrent.map((response) => response.status).sort(), [201, 409]);
+    const duplicateAccount = concurrent.find((response) => response.status === 409);
+    assert.equal((await duplicateAccount.json()).error.code, 'duplicate_account_credential');
+
     for (const entry of [
-      ['jimeng', 'cookie', 'sessionid=test-jimeng-token'],
       ['codex', 'oauth', { accessToken: 'test-codex-token', accountId: 'fixture' }],
-      ['kiro', 'desktop', { refreshToken: 'test-kiro-refresh' }],
       ['claude', 'api-key', 'test-claude-token'],
     ]) {
       const [provider, kind, credential] = entry;
@@ -114,6 +121,22 @@ test(
         201,
       );
     }
+    const kiroImports = await Promise.all([{ refreshToken: 'test-kiro-refresh' }, { refresh_token: 'test-kiro-refresh' }].map((credential) =>
+      http('/admin/v1/accounts', admin, {
+        provider: 'kiro', kind: 'desktop', credential, label: 'kiro',
+      }),
+    ));
+    assert.deepEqual(kiroImports.map((response) => response.status).sort(), [201, 409]);
+    assert.equal((await readFile(refreshes, 'utf8')).trim(), 'desktop');
+    for (const [provider, kind, credential] of [
+      ['codex', 'oauth', { tokens: { access_token: 'test-codex-token', account_id: 'fixture' } }],
+      ['kiro', 'desktop', { refresh_token: 'test-kiro-refresh' }],
+      ['claude', 'api-key', { apiKey: 'test-claude-token' }],
+    ]) {
+      const result = await json('/admin/v1/accounts', admin, { provider, kind, credential, label: 'Duplicate' }, 409);
+      assert.equal(result.error.code, 'duplicate_account_credential');
+    }
+
     const oauth = await json('/admin/v1/codex/authorize', admin, { label: 'Codex PKCE' });
     const authURL = new URL(oauth.url);
     assert.equal(authURL.origin, 'https://auth.openai.com');
@@ -235,7 +258,19 @@ test(
       `UPDATE ${schema}.provider_accounts SET expires_at=now()-interval '1 minute',concurrency=2 WHERE id=$1`,
       [desktopAccount.id],
     );
-    await Promise.all([json('/v1/messages', key, kiro), json('/v1/messages', key, kiro)]);
+    async function invokeWhileRefreshing() {
+      // SKIP LOCKED can return 429 while the other request is claiming its lease.
+      for (let retry = 0; retry < 10; retry++) {
+        const response = await http('/v1/messages', key, kiro);
+        const result = await response.json();
+        if (response.status === 200) return result;
+        assert.equal(response.status, 429);
+        assert.equal(result.error.code, 'account_unavailable');
+        await delay(20);
+      }
+      assert.fail('Kiro account lease remained unavailable');
+    }
+    await Promise.all([invokeWhileRefreshing(), invokeWhileRefreshing()]);
     assert.equal((await readFile(refreshes, 'utf8')).trim().split('\n').length, 2);
     const tool = testTool(kiro.model);
     const kiroTool = await json('/v1/messages', key, tool);

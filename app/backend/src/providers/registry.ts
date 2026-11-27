@@ -1,14 +1,20 @@
 import { credentialKinds, isProvider, type Provider } from '../domain.ts';
-import { normalizeApiKey, normalizeOAuth, type CredentialInput } from './credentials.ts';
+import { normalizeApiKey, normalizeOAuth, type CredentialInput, type CredentialTokens } from './credentials.ts';
 import { codexAuthorization, discoverCodex, invokeCodex, normalizeCodexCredential, refreshCodex, validateCodexInput } from './codex/adapter.ts';
 import { discoverKiro, invokeKiro, refreshKiro } from './kiro/adapter.ts';
 import { discoverJimeng, normalizeJimengCredential } from './jimeng/adapter.ts';
 import { discoverClaude, invokeClaude } from './claude.ts';
 
+export interface DiscoveredModel {
+  id: string;
+  operation: string;
+  capabilities: unknown;
+}
+
 interface ProviderAdapter {
   normalize(kind: string, input: CredentialInput): ReturnType<typeof normalizeApiKey> | ReturnType<typeof normalizeOAuth>;
-  discover(kind: string, credential, signal: AbortSignal): Promise<unknown[]>;
-  refresh?(kind: string, credential, signal: AbortSignal): Promise<unknown>;
+  discover(kind: string, credential, signal: AbortSignal): Promise<DiscoveredModel[]>;
+  refresh?(kind: string, credential, signal: AbortSignal): Promise<CredentialTokens & { expiresAt?: string }>;
   validateText?(kind: string, input: Record<string, unknown>): void;
   text?(kind: string, credential, model: string, operation: string, input, headers: Headers, signal: AbortSignal): Promise<Response>;
 }
