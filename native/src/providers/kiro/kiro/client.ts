@@ -5,7 +5,6 @@ import type {
   AssistantResponseEvent,
   ContextUsageEvent,
   KiroEvent,
-  KiroPayload,
   MetadataEvent,
   MeteringEvent,
   ReasoningContentEvent,
@@ -65,9 +64,9 @@ export class KiroApiError extends Error {
   }
 }
 
-export async function* invoke(payload: KiroPayload, token: string, region: string, oidc: boolean, signal?: AbortSignal, send = fetch): AsyncGenerator<KiroEvent> {
+export async function* invoke(body: string, token: string, region: string, oidc: boolean, signal?: AbortSignal, send = fetch): AsyncGenerator<KiroEvent> {
   const response = await send(`https://runtime.${region}.kiro.dev/generateAssistantResponse`, {
-    method: "POST", headers: { ...buildHeaders(token), ...(oidc ? { tokentype: "SSO_OIDC" } : {}) }, body: JSON.stringify(payload), signal, redirect: "error",
+    method: "POST", headers: { ...buildHeaders(token), ...(oidc ? { tokentype: "SSO_OIDC" } : {}) }, body, signal, redirect: "error",
   });
   if (!response.ok) {
     const body = await response.text();

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { AppError } from '../../domain.ts';
+import { MAX_PAYLOAD_BYTES } from './core/config.ts';
 import { buildPayload } from './kiro/payload.ts';
 import { invoke } from './kiro/client.ts';
 import { ResponseBuilder, estimateTokens } from './anthropic/response.ts';
@@ -71,7 +73,9 @@ export async function discoverKiro(kind: string, c, signal: AbortSignal) {
 export async function invokeKiro(kind: string, credential, model: string, input, signal: AbortSignal) {
   const payload = { ...input, model };
   const kiroPayload = buildPayload(payload, model, credential.profileArn, randomUUID());
-  const events = invoke(kiroPayload, credential.accessToken, credential.apiRegion, kind === 'oidc', signal);
+  const body = JSON.stringify(kiroPayload);
+  if (Buffer.byteLength(body) > MAX_PAYLOAD_BYTES) throw new AppError(413, 'kiro_payload_too_large');
+  const events = invoke(body, credential.accessToken, credential.apiRegion, kind === 'oidc', signal);
   const prompt = estimateTokens(JSON.stringify(payload.messages));
   if (payload.stream) return streamResponse(events, input.model, prompt, signal);
   const response = new ResponseBuilder();

@@ -38,3 +38,18 @@ test('sends Claude requests directly to Anthropic', async (t) => {
   );
   assert.deepEqual(await response.json(), { ok: true });
 });
+
+test('rejects oversized Kiro requests before contacting upstream', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('unexpected upstream request'));
+  await assert.rejects(
+    invokeText(
+      { provider: 'kiro', kind: 'desktop', credential: { accessToken: 'fixture', apiRegion: 'us-east-1' } },
+      'claude-sonnet-4.5',
+      'messages',
+      { model: 'kiro/claude-sonnet-4.5', messages: [{ role: 'user', content: 'x'.repeat(12_000_000) }] },
+      new Headers(),
+      new AbortController().signal,
+    ),
+    { status: 413, code: 'kiro_payload_too_large' },
+  );
+});

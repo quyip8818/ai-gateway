@@ -54,7 +54,7 @@ flowchart LR
 | Claude | Anthropic Messages 官方契约和 CLIProxyAPI 原生转发作为实现参考 | 将 Console API Key 鉴权、版本和 beta 头、SSE、用量、`count_tokens` 能力按 Anthropic Messages 协议重新实现为 TypeScript 模块。 |
 | 网关通用能力 | 新实现 | 从新的产品流程设计鉴权、账号存储、目录、调度、任务、用量、控制台和构建。为新契约编写测试。 |
 
-Kiro 来源项目还实现了自动裁剪历史、缓存用量估算和本机数据库依赖。第一版将真实用量与估算分开，保留原始请求边界。Kiro 的 EventStream 必须处理分片、帧长度、CRC、消息类型、异常帧及中途截断。解码失败对应明确的上游错误，不能把缺失终止帧的流记成成功。[Kiro 客户端][ts-kiro-client] · [EventStream 解码][ts-kiro-events] · [Rust 对照][rust-events]
+Kiro 来源项目还实现了自动裁剪历史、缓存用量估算和本机数据库依赖。第一版将真实用量与估算分开，请求超过出站大小上限时返回 HTTP 413。Kiro 的 EventStream 必须处理分片、帧长度、CRC、消息类型、异常帧及中途截断。解码失败对应明确的上游错误，不能把缺失终止帧的流记成成功。[Kiro 客户端][ts-kiro-client] · [EventStream 解码][ts-kiro-events] · [Rust 对照][rust-events]
 
 ### 源码来源和许可证
 
