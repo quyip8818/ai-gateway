@@ -9,7 +9,7 @@
 3. 用管理员用户名和密码进入控制台，在「上游账号」选择产品并添加凭证。账号验证后自动更新该产品的模型目录。
 4. 在「API 密钥」选择可调用的产品并签发网关 Key。用 `GET /v1/models` 查询该 Key 能访问的模型 ID。
 
-本地开发可使用 Docker 中独立运行的 PostgreSQL 数据库。参考根目录 `.env.example` 配置连接、加密密钥和管理员用户名和密码，执行 `npm ci --prefix native` 后运行 `pnpm start`。启动命令会重建前端和后端，默认监听 41873。端口冲突时通过 `lsof` 找到监听进程，先尝试正常停止，端口仍被占用时再强制停止该进程。启动成功后会打印控制台 URL。
+本地开发可使用 Docker 中独立运行的 PostgreSQL 数据库。参考根目录 `.env.example` 配置连接、加密密钥和管理员用户名和密码，执行 `npm ci` 后运行 `npm start`。启动命令会重建前端和后端，默认监听 41873。端口冲突时通过 `lsof` 找到监听进程，先尝试正常停止，端口仍被占用时再强制停止该进程。启动成功后会打印控制台 URL。
 
 ## 账号和入口
 
@@ -28,10 +28,17 @@ Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器�
 
 所有公开生成接口使用网关 Key，接受 `Authorization: Bearer <key>` 或 `x-api-key`。视频创建可带 `Idempotency-Key`，通过 `GET /v1/videos/:id` 查状态，通过 `GET /v1/videos/:id/content` 下载。复刻接受已授权的源任务 `video.id`，或同一上游账号可查询的即梦复刻任务 `video.upstream_id`。
 
+## 代码布局
+
+- `app/frontend` 包含 React 控制台和管理 API 客户端。
+- `app/backend` 包含 Koa 入口、业务模块、供应商适配器、持久化和集成测试。
+- `shared/contracts` 包含前后端共用的公开契约。
+- `npm run build` 生成 `dist/server.js` 和 `dist/frontend` 静态资源。
+
 ## 验证
 
-- `pnpm lint` 检查 TypeScript 源码、测试和构建脚本。
+- `npm run lint` 检查 TypeScript 源码、测试和构建脚本。
 - `npm test` 构建并运行协议测试。
 - 设置 `TEST_DATABASE_URL` 后，测试会在专用库中新建临时 schema，使用协议替身验证四个供应商、产品授权、SSE、媒体交付及视频幂等。
 
-[部署配置](deploy/README.md) · [架构设计](docs/native-provider-architecture.md) · [测试与发布验收](docs/integration-validation.md) · [源码来源](native/SOURCES.md)
+[部署配置](deploy/README.md) · [架构设计](docs/native-provider-architecture.md) · [测试与发布验收](docs/integration-validation.md) · [源码来源](app/backend/SOURCES.md)

@@ -18,5 +18,4 @@ logs/
 .idea/
 .DS_Store
 
-native/dist/
-native/console.js
+/dist/

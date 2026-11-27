@@ -1,7 +1,7 @@
 .PHONY: build test start deploy
 
 build:
-	npm ci --prefix native
+	npm ci
 	npm run build
 
 test:

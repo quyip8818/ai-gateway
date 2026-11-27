@@ -3,7 +3,7 @@
 `npm test` 构建应用并运行协议单测。配置 `TEST_DATABASE_URL` 后同时运行 HTTP 集成测试。测试在指定的 PostgreSQL 里创建专用 schema，结束后删除。真实产品进程通过本机 HTTP 接收请求，测试替身只在出站边界替换 `fetch` 和 Axios transport。CI 提供 PostgreSQL 并运行全部测试。
 
 ```sh
-npm ci --prefix native
+npm ci
 TEST_DATABASE_URL=postgres://gatewaytest:test-password@127.0.0.1:5432/gatewaytest npm test
 ```
 
@@ -17,22 +17,20 @@ TEST_DATABASE_URL=postgres://gatewaytest:test-password@127.0.0.1:5432/gatewaytes
 | Claude | 按 Messages 路径、账号凭证和计数接口验证。客户端断开后检查上游取消、尝试状态及账号租约可重新获取。 |
 | 网关 | 空库、用户名密码登录、会话及改密失效、产品筛选、跨产品授权拒绝、视频归属、签名到期、并发幂等、重启后持久状态及数据库版本检查。 |
 
-即梦固定基线在 [fixtures/jimeng-submissions.json](../native/test/fixtures/jimeng-submissions.json)。生成时使用本地 `jimeng-api` 的 `bf54a38451d18b80c66f1982590ef2f0a75b4c0a` 加 [源码来源](../native/SOURCES.md) 记录的工作树更新。捕获脚本加载原项目的生成控制器和依赖，需要在源项目中先安装其锁定依赖。测试替换持久化、浏览器与网络边界。归一化仅覆盖随机 ID、时间、随机种子和 Web ID。CI 读取已提交的基线，需要审阅上游源码改变时才重新生成：
+即梦固定基线在 [fixtures/jimeng-submissions.json](../app/backend/test/fixtures/jimeng-submissions.json)。生成时使用本地 `jimeng-api` 的 `bf54a38451d18b80c66f1982590ef2f0a75b4c0a` 加 [源码来源](../app/backend/SOURCES.md) 记录的工作树更新。捕获脚本加载原项目的生成控制器和依赖，需要在源项目中先安装其锁定依赖。测试替换持久化、浏览器与网络边界。归一化仅覆盖随机 ID、时间、随机种子和 Web ID。CI 读取已提交的基线，需要审阅上游源码改变时才重新生成：
 
 ```sh
-cd native
 npm run build
-node test/capture-jimeng.mjs /path/to/jimeng-api > dist/jimeng-submissions.json
-diff -u test/fixtures/jimeng-submissions.json dist/jimeng-submissions.json
+node app/backend/test/capture-jimeng.mjs /path/to/jimeng-api > dist/jimeng-submissions.json
+diff -u app/backend/test/fixtures/jimeng-submissions.json dist/jimeng-submissions.json
 ```
 
-Codex 和 Kiro 固定基线位于 [fixtures/text-provider-contracts.json](../native/test/fixtures/text-provider-contracts.json)，取自 [源码来源](../native/SOURCES.md) 列出的提交。在 Node.js 24 下用以下命令复现：
+Codex 和 Kiro 固定基线位于 [fixtures/text-provider-contracts.json](../app/backend/test/fixtures/text-provider-contracts.json)，取自 [源码来源](../app/backend/SOURCES.md) 列出的提交。在 Node.js 24 下用以下命令复现：
 
 ```sh
-cd native
 npm run build
-node test/capture-text-providers.mjs /path/to/openai-oauth /path/to/kiro-api > dist/text-provider-contracts.json
-diff -u test/fixtures/text-provider-contracts.json dist/text-provider-contracts.json
+node app/backend/test/capture-text-providers.mjs /path/to/openai-oauth /path/to/kiro-api > dist/text-provider-contracts.json
+diff -u app/backend/test/fixtures/text-provider-contracts.json dist/text-provider-contracts.json
 ```
 
 更新基线前应核对源码版本，审查差异。Claude 使用独立的 Messages 协议断言。所有源码对照均运行指定的控制器或库入口。

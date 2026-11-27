@@ -65,24 +65,31 @@ Kiro 来源项目还实现了自动裁剪历史、缓存用量估算和本机数
 ### 目录和依赖
 
 ```text
-apps/
-  server/            Koa 装配、配置、生命周期
-  console/           React 控制台
-packages/
-  identity/          管理会话、调用 Key 与权限
-  accounts/          产品账号、凭证、授权流程、调度和租约
-  catalog/           模型发现、公开别名、操作和能力
-  gateway/           文本调用编排、尝试记录与流生命周期
-  media/             图片交付、视频任务、素材与制品授权
-  providers/         注册表及按供应商划分的实现
-  protocols/         Responses、Messages、Images、Videos 的边界类型与错误输出
-  postgres/          连接池、SQL 初始化与各业务模块的仓储实现
-  blob-store/        媒体文件写入和读取
+app/
+  frontend/                     React 控制台、管理 API 客户端与页面
+  backend/
+    src/
+      server.ts                 Koa 装配、配置、生命周期
+      http/                     管理与公开路由、请求和响应边界
+      modules/
+        identity/               管理会话、调用 Key 与权限
+        accounts/               账号接入、凭证续期、授权流程、调度和租约
+        catalog/                模型发现结果的管理与公开视图
+        gateway/                文本与图片调用、尝试记录、流生命周期
+        media/                  视频任务、任务循环、制品授权与交付
+      providers/                适配器注册表及各供应商实现
+      infrastructure/
+        postgres/               连接池、初始化 SQL 和业务仓储
+        files/                  媒体文件读写
+    test/                       协议基线与集成测试
+shared/contracts/               控制台与后端共同使用的公开契约
+deploy/                         Compose 与部署配置
+dist/                           构建生成的服务端和静态控制台
 ```
 
-目录表示责任边界，可先用工作区内的模块实现。服务入口负责组装依赖。HTTP 路由只处理输入、鉴权上下文与输出，业务用例对调用方和任务循环提供相同入口。业务模块拥有自己的仓储接口，PostgreSQL 层实现接口并统一管理连接。控制台使用管理 API。共享给前端的类型仅涵盖实际 API 契约。
+根目录管理依赖锁和构建命令。服务入口装配业务模块、仓储和供应商。HTTP 路由处理输入、鉴权上下文与输出。业务模块通过仓储方法读写数据，事务和锁由 PostgreSQL 仓储管理。控制台通过同源管理 API 获取数据。
 
-供应商模块依赖协议边界类型和本次调用上下文，通过注入获得 HTTP 客户端、日志和取消信号。每个模块独立拥有上游认证、请求转换和响应解释。账号、SQL、Koa 和其他供应商实现留在各自边界，模块间通过公开入口交换数据。模块边界以目录和入口函数体现，自动依赖规则属于后续增强。
+供应商模块处理上游凭证、请求构造和响应解析。文本执行和媒体能力通过适配入口调用。视频任务先准备上游请求，再持久化提交状态并发送，任务循环持有租约直到本轮处理结束。文本流由 HTTP 层送达客户端，调用记录和账号租约由生成编排在流结束时结算。
 
 ### 供应商契约
 
@@ -125,7 +132,7 @@ packages/
 
 ## 5. 新 PostgreSQL 数据模型
 
-空库从 [initial.sql](../native/src/db/initial.sql) 初始化，版本记录在 `gateway_schema`。每个实例由一个管理员管理。调用权限由 API Key 的授权产品和操作决定。同一产品下的账号参与调度。媒体资源按调用 Key 归属。
+空库从 [initial.sql](../app/backend/src/infrastructure/postgres/initial.sql) 初始化，版本记录在 `gateway_schema`。每个实例由一个管理员管理。调用权限由 API Key 的授权产品和操作决定。同一产品下的账号参与调度。媒体资源按调用 Key 归属。
 
 | 表 | 职责与主要字段 |
 | --- | --- |
