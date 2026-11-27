@@ -6,14 +6,20 @@ import { discoverJimeng, normalizeJimengCredential } from './jimeng/adapter.ts';
 import { discoverClaude, invokeClaude } from './claude.ts';
 
 export interface DiscoveredModel {
-  id: string;
+  publicId: string;
+  upstreamId: string;
   operation: string;
   capabilities: unknown;
 }
 
 interface ProviderAdapter {
   normalize(kind: string, input: CredentialInput): ReturnType<typeof normalizeApiKey> | ReturnType<typeof normalizeOAuth>;
-  discover(kind: string, credential, signal: AbortSignal): Promise<DiscoveredModel[]>;
+  discover(kind: string, credential, signal: AbortSignal): Promise<{
+    id: string;
+    publicId?: string;
+    operation: string;
+    capabilities: unknown;
+  }[]>;
   refresh?(kind: string, credential, signal: AbortSignal): Promise<CredentialTokens & { expiresAt?: string }>;
   validateText?(kind: string, input: Record<string, unknown>): void;
   text?(kind: string, credential, model: string, operation: string, input, headers: Headers, signal: AbortSignal): Promise<Response>;
@@ -64,9 +70,15 @@ export function refreshCredential(provider: string, kind: string, credential, si
   return refresh(kind, credential, signal);
 }
 
-export function discover(provider: string, kind: string, credential, signal: AbortSignal) {
+export async function discover(provider: string, kind: string, credential, signal: AbortSignal): Promise<DiscoveredModel[]> {
   if (!isProvider(provider)) throw new Error('Unknown provider');
-  return adapters[provider].discover(kind, credential, signal);
+  const models = await adapters[provider].discover(kind, credential, signal);
+  return models.map(({ id, publicId, operation, capabilities }) => ({
+    publicId: publicId ?? `${provider}/${id}`,
+    upstreamId: id,
+    operation,
+    capabilities,
+  }));
 }
 
 export function validateTextInput(provider: string, kind: string, input: Record<string, unknown>) {
@@ -82,3 +94,4 @@ export function invokeText(account, model: string, operation: string, input, hea
 
 export { codexAuthorization, normalizeJimengCredential };
 export { jimengImages, jimengVideos, jimengMediaFiles } from './jimeng/media.ts';
+export { preferredImageModels, preferredVideoModels } from './jimeng/api/controllers/models.ts';

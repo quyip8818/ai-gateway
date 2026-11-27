@@ -6,72 +6,22 @@ import util from "@/lib/util.ts";
 import { request, uploadFile } from "./core.ts";
 import { checkGenerationCredits } from "./generation-credits.ts";
 import logger from "@/lib/logger.ts";
-import { JimengModelConfig, resolveImageModelConfig } from "./models.ts";
+import { type JimengModelConfig, resolveImageModelConfig, SEEDREAM_55_MODEL_KEY } from "./models.ts";
 import { IMAGE_DIMENSIONS, closestImageResolution, type ImageSize } from "./image-size.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
-export const DEFAULT_MODEL = "jimeng-image-5.0-lite";
 const DRAFT_VERSION = "3.3.20";
-const SEEDREAM_55_MODEL_KEY = "high_aes_general_v55";
 // The serialized draft has its own version. Jimeng reads the image count
 // from `abilities.gen_option` inside the draft.
 const DRAFT_CONTENT_VERSION = "3.0.2";
 const WEB_VERSION = "7.5.0";
 const MIN_VERSION = "3.0.2";
 
-const MODEL_MAP = {
-  "jimeng-image-5.0-pro": "high_aes_general_v50p_large",
-  "jimeng-image-5.0-lite": "high_aes_general_v50",
-  "jimeng-image-4.7": "high_aes_general_v43",
-  "jimeng-image-4.6": "high_aes_general_v42",
-  "jimeng-image-4.5": "high_aes_general_v40l",
-  "jimeng-image-4.1": "high_aes_general_v41",
-  "jimeng-image-4.0": "high_aes_general_v40",
-  "jimeng-image-3.1": "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
-  "jimeng-image-3.0": "high_aes_general_v30l:general_v3.0_18b",
-  "jimeng-image-2.0-pro": "high_aes_general_v20_L:general_v2.0_L",
-};
-
-function isHighResImageModel(modelName: string, modelConfig?: JimengModelConfig) {
-  if (modelConfig) return modelConfig.supportedResolutions.includes("2k");
-  return [
-    "jimeng-image-5.0-lite",
-    "jimeng-image-4.7",
-    "jimeng-image-4.6",
-    "jimeng-image-4.5",
-    "jimeng-image-4.1",
-    "jimeng-image-4.0",
-  ].includes(modelName);
+function getImageResolutionFallbacks(model: JimengModelConfig, requestedResolution?: string) {
+  const supported = model.supportedResolutions;
+  const start = supported.indexOf(requestedResolution ?? "");
+  return supported.slice(start < 0 ? Math.max(0, supported.indexOf(model.defaultResolution)) : start);
 }
-
-function getImageResolutionLevels(modelName: string) {
-  if (modelName === "jimeng-image-2.0-pro") return ["1k"];
-  if (modelName === "jimeng-image-5.0-pro") return ["4k", "2k", "1.5k"];
-  if (isHighResImageModel(modelName)) return ["4k", "2k"];
-  return ["1k"];
-}
-
-function getImageResolutionFallbacks(
-  modelName: string,
-  requestedResolution?: string,
-  modelConfig?: JimengModelConfig
-) {
-  const defaultResolution =
-    modelConfig?.defaultResolution || (isHighResImageModel(modelName) ? "2k" : "1k");
-  const supportedResolutions =
-    modelConfig?.supportedResolutions?.length
-      ? modelConfig.supportedResolutions
-      : getImageResolutionLevels(modelName);
-  const startResolution = supportedResolutions.includes(requestedResolution || "")
-    ? requestedResolution
-    : defaultResolution;
-  const startIndex = Math.max(
-    0,
-    supportedResolutions.indexOf(startResolution || defaultResolution)
-  );
-  return supportedResolutions.slice(startIndex);
-}
-
 // 即梦支持的图片比例映射
 // image_ratio 值: 0=21:9, 1=16:9, 2=3:2, 3=4:3, 8=1:1, 4=3:4, 5=2:3, 6=9:16
 const ASPECT_RATIOS = [
@@ -132,10 +82,6 @@ function detectAspectRatioKey(prompt: string): string | null {
   return null;
 }
 
-export function getModel(model: string) {
-  return MODEL_MAP[model] || MODEL_MAP[DEFAULT_MODEL];
-}
-
 interface ImageGenerationOptions {
   ratio?: string;
   resolution?: string;
@@ -147,8 +93,8 @@ interface ImageGenerationOptions {
   n?: number;
 }
 
-export async function generateImages(
-  _model: string,
+async function generateImages(
+  modelConfig: JimengModelConfig,
   prompt: string,
   {
     ratio = "1:1",
@@ -190,9 +136,7 @@ export async function generateImages(
   }
 
   // 使用用户选择的模型（混合模式不再强制3.0）
-  const modelName = _model;
-  const modelConfig = await resolveImageModelConfig(modelName, refreshToken);
-  const model = modelConfig.modelReqKey || getModel(modelName);
+  const { id: modelName, modelReqKey: model } = modelConfig;
 
   // 解析分辨率和比例
   let resolutionType = resolution.toLowerCase(); // 用户指定优先
@@ -559,7 +503,7 @@ export async function generateImages(
     const record = result?.[historyId];
     if (!record)
       throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "记录不存在");
-    status = record.status;
+    status = Number(record.status);
     failCode = record.fail_code;
     item_list = Array.isArray(record.item_list) ? record.item_list : [];
     // 每5次轮询输出一次状态，避免日志过多
@@ -573,8 +517,12 @@ export async function generateImages(
   }
 
   if (status === FAIL_STATE) {
-    if (failCode === "2038") throw new APIException(EX.API_CONTENT_FILTERED);
-    else throw new APIException(EX.API_IMAGE_GENERATION_FAILED);
+    const code = String(failCode);
+    if (code === "2038") throw new APIException(EX.API_CONTENT_FILTERED);
+    if (code === "2039" || code === "1006") {
+      throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS);
+    }
+    throw new APIException(EX.API_IMAGE_GENERATION_FAILED);
   }
   if (item_list.length > n) {
     logger.info(`[生成张数] model=${modelName} historyId=${historyId} requested=${n} upstream=${item_list.length} returned=${n}`);
@@ -590,12 +538,12 @@ export async function generateImages(
  * 如果积分不足，自动降低分辨率重试
  */
 export async function generateImagesWithRetry(
-  _model: string,
+  modelReqKey: string,
   prompt: string,
   options: ImageGenerationOptions,
   refreshToken: string
 ) {
-  const modelConfig = await resolveImageModelConfig(_model, refreshToken);
+  const modelConfig = await resolveImageModelConfig(modelReqKey, refreshToken);
   const count = options.n ?? 1;
   const allowedCounts = modelConfig.supportedGenerateCounts;
   if (allowedCounts?.length && !allowedCounts.includes(count)) {
@@ -606,54 +554,19 @@ export async function generateImagesWithRetry(
   }
   const resolutionLevels = options.size
     ? [closestImageResolution(options.size.resolution, modelConfig.supportedResolutions, modelConfig.defaultResolution)]
-    : getImageResolutionFallbacks(_model, options.resolution, modelConfig);
-  let currentResIndex = 0;
-
-  while (currentResIndex < resolutionLevels.length) {
+    : getImageResolutionFallbacks(modelConfig, options.resolution);
+  for (const [index, resolution] of resolutionLevels.entries()) {
     try {
-      const currentOptions = {
-        ...options,
-        resolution: resolutionLevels[currentResIndex],
-      };
-      logger.info(`尝试生成图像，分辨率: ${currentOptions.resolution}`);
-      return await generateImages(_model, prompt, currentOptions, refreshToken);
+      logger.info(`尝试生成图像，分辨率: ${resolution}`);
+      return await generateImages(modelConfig, prompt, { ...options, resolution }, refreshToken);
     } catch (error) {
-      // 检查是否为积分不足错误 (fail_code 2039/1006 或包含积分不足关键词)
-      const isInsufficientCredits =
-        error.code === EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS[0] ||
-        (error.message &&
-          (error.message.includes("积分不足") ||
-            error.message.includes("2039") ||
-            error.message.includes("1006")));
-
-      if (
-        isInsufficientCredits &&
-        currentResIndex < resolutionLevels.length - 1
-      ) {
-        currentResIndex++;
-        logger.warn(
-          `积分不足，自动降级到 ${resolutionLevels[currentResIndex]} 分辨率重试...`
-        );
-        continue;
-      }
-
-      // 已是最低分辨率仍然失败
-      if (isInsufficientCredits) {
-        throw new APIException(
-          EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS,
-          "积分不足，已自动降至最低画质仍然不足，请前往即梦官网 https://jimeng.jianying.com 充值积分"
-        );
-      }
-
-      // 其他错误直接抛出
-      throw error;
+      const insufficientCredits = error instanceof APIException &&
+        error.compare(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS);
+      const nextResolution = resolutionLevels[index + 1];
+      if (!insufficientCredits || !nextResolution) throw error;
+      logger.warn(`积分不足，自动降级到 ${nextResolution} 分辨率重试`);
     }
   }
 
   throw new APIException(EX.API_IMAGE_GENERATION_FAILED, "图像生成失败");
 }
-
-export default {
-  generateImages,
-  generateImagesWithRetry,
-};

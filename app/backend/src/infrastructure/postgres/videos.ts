@@ -1,6 +1,6 @@
 import type pg from 'pg';
 import type { VideoOutput } from '../../../../../shared/contracts/media.ts';
-import { AppError } from '../../domain.ts';
+import { AppError, type Provider } from '../../domain.ts';
 import type { GatewayCrypto } from '../crypto.ts';
 import { insertAsset } from './media.ts';
 
@@ -104,7 +104,7 @@ export function createVideoRepository(
               WHERE id=$1 AND lease_version=$2 AND lease_until>now()`,
       [id, version],
     ),
-    completeVideo: (job: { id: string; lease_version: number }, bytes: number, output: VideoOutput | null, writeFile: () => Promise<void>) => tx(async (client) => {
+    completeVideo: (job: { id: string; lease_version: number }, provider: Provider, bytes: number, output: VideoOutput | null, writeFile: () => Promise<void>) => tx(async (client) => {
       const { rows: [completed] } = await client.query<{ owner_id: string; public_model: string }>(
         `UPDATE video_jobs SET status='completed',progress=100,
           lease_until=NULL,completed_at=now(),error_code=NULL,output=$3
@@ -115,7 +115,7 @@ export function createVideoRepository(
       // The guarded update holds the job lock until both the file and its metadata are ready.
       await writeFile();
       await insertAsset(client, {
-        id: job.id, owner: completed.owner_id, videoId: job.id, mime: 'video/mp4', bytes, model: completed.public_model,
+        id: job.id, owner: completed.owner_id, videoId: job.id, mime: 'video/mp4', bytes, provider, model: completed.public_model,
       });
     }),
   };

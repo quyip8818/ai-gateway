@@ -12,7 +12,7 @@ import { withJimengRequest } from '../../providers/jimeng/context.ts';
 type AccountRepository = Pick<Store,
   'importAccount' | 'findAccount' | 'syncAccountModels' | 'deleteAccount' | 'claimRefresh' | 'saveRefresh' | 'failRefresh' |
   'saveAuthorization' | 'consumeAuthorization' | 'selectAccount' | 'claimAccount' | 'release' |
-  'listAccounts' | 'setAccountEnabled' | 'setAccountBrowserTransport'
+  'listAccounts' | 'setAccountEnabled' | 'setAccountBrowserTransport' | 'models'
 >;
 
 function accountValidationError(error: unknown) {
@@ -134,7 +134,7 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
   }
 
   async function beginAuthorization(label: string) {
-    const flow = await codexAuthorization.begin({ redirectUri });
+    const flow = codexAuthorization.begin({ redirectUri });
     await store.saveAuthorization(flow.state, label, flow.codeVerifier);
     return { url: flow.authorizationUrl, state: flow.state, redirect_uri: redirectUri };
   }
@@ -164,10 +164,20 @@ export function createAccounts(store: AccountRepository, crypto: Pick<GatewayCry
     if (!(await store.setAccountEnabled(id, enabled)).rowCount) throw new AppError(404, 'account_not_found');
   }
 
+  async function defaultMediaModel(key: { id: string; scopes: string[] }, operation: 'image' | 'video', preferred: string[]) {
+    if (!key.scopes.includes(operation)) throw new AppError(403, 'operation_not_granted');
+    const available = new Set((await store.models(key))
+      .filter((model) => model.operation === operation && model.capabilities.mode !== 'recast')
+      .map((model) => model.id));
+    const model = preferred.find((id) => available.has(id)) ?? available.values().next().value;
+    if (!model) throw new AppError(404, 'model_not_found');
+    return model;
+  }
+
   return {
     list: store.listAccounts, setEnabled, setBrowserTransport, withProviderSettings,
     addAccount, currentCredential, credentialSnapshot, beginAuthorization, completeAuthorization, reload, replaceCookie, remove,
-    find: store.findAccount, select: store.selectAccount, claim: store.claimAccount, release: store.release,
+    find: store.findAccount, select: store.selectAccount, claim: store.claimAccount, release: store.release, defaultMediaModel,
   };
 }
 

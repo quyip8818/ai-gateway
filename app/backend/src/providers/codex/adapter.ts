@@ -1,9 +1,9 @@
 import { AppError } from '../../domain.ts';
 import { normalizeApiKey, normalizeOAuth, type CredentialInput } from '../credentials.ts';
 import {
-  createOpenAIOAuthRequest, createOpenAIOAuthTransport, deriveAccountId, exchangeOpenAIOAuthCode,
-  refreshOpenAIOAuthTokens,
-} from './runtime.ts';
+  createOpenAIOAuthRequest, deriveAccountId, exchangeOpenAIOAuthCode, refreshOpenAIOAuthTokens,
+} from './oauth.ts';
+import { discoverCodexModels, requestCodexResponse } from './responses.ts';
 
 export async function refreshCodex(c, signal: AbortSignal) {
   const result = await refreshOpenAIOAuthTokens({ refreshToken: c.refreshToken, signal });
@@ -19,15 +19,8 @@ export async function refreshCodex(c, signal: AbortSignal) {
 
 export async function discoverCodex(kind: string, c, signal: AbortSignal) {
   if (kind === 'oauth') {
-    const transport = createOpenAIOAuthTransport({ auth: c });
-    const res = await transport.request('/models', { signal });
-    if (!res.ok) throw new Error('Codex model discovery failed');
-    const data = await res.json();
-    const models = data.data ?? data.models;
-    if (!Array.isArray(models)) throw new Error('Codex returned an invalid model catalog');
-    return models
-      .filter((m) => typeof (m.id ?? m.slug) === 'string')
-      .map((m) => ({ id: m.id ?? m.slug, operation: 'responses', capabilities: { streaming: true } }));
+    const models = await discoverCodexModels(c, signal);
+    return models.map((id) => ({ id, operation: 'responses', capabilities: { streaming: true } }));
   }
   const res = await fetch('https://api.openai.com/v1/models', {
     headers: { authorization: `Bearer ${c.token}` },
@@ -50,10 +43,12 @@ export function validateCodexInput(kind: string, input: Record<string, unknown>)
 }
 
 export function invokeCodex(kind: string, credential, model: string, input, signal: AbortSignal) {
-  const request = { method: 'POST', body: JSON.stringify({ ...input, model }), signal };
-  if (kind === 'oauth') return createOpenAIOAuthTransport({ auth: credential }).request('/responses', request);
+  const body = { ...input, model };
+  if (kind === 'oauth') return requestCodexResponse(credential, body, signal);
   return fetch('https://api.openai.com/v1/responses', {
-    ...request,
+    method: 'POST',
+    body: JSON.stringify(body),
+    signal,
     redirect: 'error',
     headers: { authorization: `Bearer ${credential.token}`, 'content-type': 'application/json' },
   });

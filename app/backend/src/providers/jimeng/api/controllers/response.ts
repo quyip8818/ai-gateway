@@ -22,25 +22,16 @@ export function decodeJimengResponse(response: AxiosResponse, path: string) {
     typeof rawCode === 'number' || (typeof rawCode === 'string' && rawCode.trim()) ? Number(rawCode) : NaN;
 
   if (ret === 5000 || ret === 1006) {
-    throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[积分不足]: ${errmsg} (错误码: ${ret})`)
-      .setHTTPStatusCode(response.status);
+    throw new APIException(EX.API_IMAGE_GENERATION_INSUFFICIENT_POINTS, `[积分不足]: ${errmsg} (错误码: ${ret})`, response.status);
   }
   if (ret === 4013 || ret === 1019) {
-    throw new APIException(EX.API_RISK_CONTROL_REJECTED, `[风控拦截]: ${errmsg} (错误码: ${ret})`).setData({
-      ret: String(ret),
-      errmsg,
-      fail_code: body?.fail_code,
-      fail_starling_key: body?.fail_starling_key,
-      logid: body?.logid,
-    }).setHTTPStatusCode(response.status);
+    throw new APIException(EX.API_RISK_CONTROL_REJECTED, `[风控拦截]: ${errmsg} (错误码: ${ret})`, response.status);
   }
   if (Number.isFinite(ret) && ret !== 0) {
-    throw new APIException(EX.API_REQUEST_FAILED, `[请求失败]: ${errmsg} (错误码: ${ret})`)
-      .setHTTPStatusCode(response.status);
+    throw new APIException(EX.API_REQUEST_FAILED, `[请求失败]: ${errmsg} (错误码: ${ret})`, response.status);
   }
   if (response.status < 200 || response.status >= 300) {
-    throw new APIException(EX.API_REQUEST_FAILED, `即梦上游返回 HTTP ${response.status}`)
-      .setHTTPStatusCode(response.status);
+    throw new APIException(EX.API_REQUEST_FAILED, `即梦上游返回 HTTP ${response.status}`, response.status);
   }
   if (path === ACCOUNT_INFO_PATH) {
     if (body?.message === 'error') return undefined;

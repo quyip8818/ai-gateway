@@ -7,12 +7,12 @@ import { inspectVideoHistory } from './api/controllers/video-history.ts';
 import { getDefaultVideoDuration, getSupportedVideoDurations, submitVideoGeneration } from './api/controllers/videos.ts';
 import { prepareVideoRecast } from './api/controllers/video-recast.ts';
 import { submitScenarioVideo } from './api/controllers/video-scenario.ts';
-import { describeVideoTaskProgress } from './api/controllers/video-task-progress.ts';
+import { pendingVideoProgress } from './api/controllers/video-task-progress.ts';
 import { videoSize, videoSizeSpec } from './api/controllers/video-size.ts';
 import { withJimengRequest } from './context.ts';
 import JimengError from './lib/exceptions/APIException.ts';
 import JimengExceptions from './api/consts/exceptions.ts';
-import { DEFAULT_VIDEO_RECAST_MODEL, VIDEO_RECAST_MODELS } from './lib/configs/video-recast-models.ts';
+import { videoRecastModel } from './lib/configs/video-recast-models.ts';
 import { downloadGeneratedImage, downloadPublicMedia, loadImageReference } from './lib/image-reference.ts';
 
 export const jimengImages = {
@@ -31,10 +31,10 @@ export const jimengImages = {
 };
 
 export const jimengVideos = {
-  defaultRecastModel: DEFAULT_VIDEO_RECAST_MODEL,
-  recastSpec(model: string) {
-    const preset = VIDEO_RECAST_MODELS.get(model);
-    if (preset) return { seconds: preset.sourceDurationMs / 1000, resolution: preset.resolution };
+  recast: {
+    model: videoRecastModel.id,
+    seconds: videoRecastModel.sourceDurationMs / 1000,
+    resolution: videoRecastModel.resolution,
   },
   size: videoSize,
   parseSize: videoSizeSpec,
@@ -49,9 +49,8 @@ export const jimengVideos = {
   },
   async prepare(job, payload, token: string, signal: AbortSignal) {
     if (job.operation === 'recast') {
-      const preset = VIDEO_RECAST_MODELS.get(job.upstream_model)!;
       const scenario = await withJimengRequest(signal, () =>
-        prepareVideoRecast(token, job.upstream_source_id, payload.prompt, preset),
+        prepareVideoRecast(token, job.upstream_source_id, payload.prompt, videoRecastModel),
       );
       return {
         size: scenario.size,
@@ -78,13 +77,13 @@ export const jimengVideos = {
     ));
     const { result, record } = inspectVideoHistory(response, history ?? id);
     if (result.state !== 'pending') return result;
-    return { state: 'pending' as const, progress: describeVideoTaskProgress(result, record).percent };
+    return { state: 'pending' as const, progress: pendingVideoProgress(result, record) };
   },
   terminalError(error: unknown) {
     if (!(error instanceof JimengError)) return;
-    if (error.compare(JimengExceptions.API_REQUEST_PARAMS_INVALID)) return 'invalid_upstream_video_input';
+    if (error.compare(JimengExceptions.API_REQUEST_PARAMS_INVALID)) return 'invalid_video_input';
     if (error.compare(JimengExceptions.API_IMAGE_GENERATION_INSUFFICIENT_POINTS))
-      return 'insufficient_jimeng_credits';
+      return 'generation_unavailable';
   },
 };
 

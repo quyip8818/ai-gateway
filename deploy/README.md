@@ -10,8 +10,6 @@ docker compose --env-file deploy/.env -f deploy/compose.yaml up -d --build
 
 PostgreSQL 和媒体使用独立卷。Chromium 包含在应用镜像中。即梦浏览器传输默认自动选择，可用 `JIMENG_BROWSER_TRANSPORT=off` 关闭。每个内置供应商直接访问自己的上游。
 
-## 从 `native/` 目录版本升级
+## 数据库版本
 
-升级前备份数据库并停止旧版本应用。当前版本启动时将 schema 3 或 4 升级到 schema 5，支持删除上游账号。从 schema 3 升级时会同时为已有凭证回填指纹。使用原 Compose 项目、PostgreSQL 卷、媒体卷及 `GATEWAY_SECRET` 重建应用即可继续使用现有账号、Key、任务和制品。历史重复账号予以保留，后续添加相同凭证会返回冲突。旧版本应用无法直接读取 schema 5，如需回滚请使用升级前的数据库备份。沿用管理员用户名和密码可继续使用尚未过期的管理会话。自定义脚本请改为在仓库根目录执行 `npm ci` 和 `npm run build`，服务产物为 `dist/server.js`。
-
-schema 1 和 2 使用了不同的工作区或账号池授权模型。应用会拒绝这些版本并保留数据库内容。升级这类数据库前需单独映射原有授权范围，避免把账号池授权扩展为整个产品的授权。
+首次部署使用空数据库或空 schema，应用会从初始 SQL 建表。已有数据库的 schema 版本必须与正在部署的构建一致。部署到旧版本实例时，可先使用单独的 Compose 项目和端口验证新版本，保留旧项目及其卷。

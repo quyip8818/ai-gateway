@@ -1,19 +1,21 @@
 import type pg from 'pg';
 import type { MediaPage, MediaQuery } from '../../../../../shared/contracts/media.ts';
+import type { Provider } from '../../domain.ts';
 
 interface NewAsset {
   id: string;
   owner: string;
   mime: string;
   bytes: number;
+  provider: Provider;
   model: string;
   videoId?: string;
 }
 
 export function insertAsset(db: pg.Pool | pg.PoolClient, asset: NewAsset) {
   return db.query(
-    'INSERT INTO media_assets(id,owner_id,mime,bytes,model,video_id) VALUES($1,$2,$3,$4,$5,$6)',
-    [asset.id, asset.owner, asset.mime, asset.bytes, asset.model, asset.videoId ?? null],
+    'INSERT INTO media_assets(id,owner_id,mime,bytes,provider,model,video_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
+    [asset.id, asset.owner, asset.mime, asset.bytes, asset.provider, asset.model, asset.videoId ?? null],
   );
 }
 
@@ -24,10 +26,10 @@ export function createMediaRepository(db: pg.Pool) {
     } = await db.query<{ total: string; items: MediaPage['items'] }>(
       `WITH filtered AS NOT MATERIALIZED (
         SELECT id,mime,bytes,model,created_at,
-          split_part(mime,'/',1) AS type, split_part(model,'/',1) AS provider
+          split_part(mime,'/',1) AS type, provider
         FROM media_assets
         WHERE ($1::text IS NULL OR mime LIKE $1 || '/%')
-          AND ($2::text IS NULL OR split_part(model,'/',1)=$2)
+          AND ($2::text IS NULL OR provider=$2)
       ), selection AS (
         SELECT * FROM filtered ORDER BY created_at DESC,id DESC LIMIT $3 OFFSET $4
       )

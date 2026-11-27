@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { measuredPromptToken } from "../kiro/fit.ts";
-import { refusalOf } from "../kiro/refusal.ts";
-import { splitThinking as splitThinkingText } from "../kiro/thinking.ts";
+import { AppError } from "../../../domain.ts";
+import { CONTEXT_WINDOW } from "../core/config.ts";
 import type { KiroEvent } from "../kiro/type.ts";
 import type { AnthropicContentBlock, AnthropicUsage, MessagesResponse, StopReason } from "./type.ts";
 
@@ -10,11 +9,10 @@ import type { AnthropicContentBlock, AnthropicUsage, MessagesResponse, StopReaso
  *
  * Kiro emits tool input as a sequence of partial JSON fragments terminated by a
  * `stop` event, which lines up with Anthropic's `input_json_delta`. Text arrives
- * as plain chunks. This class is the single place that reassembles both, so the
- * streaming and non-streaming responses cannot drift apart.
+ * as plain chunks. This class gathers those fragments into a JSON response.
  */
 
-export type ToolAccumulator = {
+type ToolAccumulator = {
   id: string;
   name: string;
   json: string;
@@ -44,7 +42,7 @@ export const mapStopReason = (kiroReason: string | undefined, sawToolUse: boolea
  * so we approximate at ~4 characters per token and label it clearly rather than
  * inventing precise-looking numbers.
  */
-export const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
+export const estimateTokens = (characters: number): number => Math.ceil(characters / 4);
 
 /**
  * The prompt's size by Kiro's own count, when the service reported one.
@@ -56,41 +54,35 @@ export const estimateTokens = (text: string): number => Math.max(1, Math.ceil(te
  * number however rough the output estimate is. That sum is what a client
  * sizing its next request against the window needs.
  */
-export const promptFromContext = (percent: number, outputToken: number): number | undefined => {
-  const total = measuredPromptToken(percent);
-  return total === undefined ? undefined : Math.max(1, total - outputToken);
+const promptFromContext = (percent: number | undefined, outputToken: number): number | undefined => {
+  if (percent === undefined || !Number.isFinite(percent) || percent < 0 || percent > 100) return undefined;
+  return Math.max(1, Math.round(percent * CONTEXT_WINDOW / 100) - outputToken);
 };
 
-export function usageOf(prompt: number, output: number): AnthropicUsage {
-  return { input_tokens: prompt, output_tokens: output };
+export function estimateUsage(prompt: number, textChars: number, reasoningChars: number, tools: number, contextPercent?: number): AnthropicUsage {
+  const output = Math.max(1, estimateTokens(textChars)) + estimateTokens(reasoningChars) + tools * 8;
+  return { input_tokens: promptFromContext(contextPercent, output) ?? prompt, output_tokens: output };
 }
 
 export class ResponseBuilder {
-  private readonly texts: string[] = [];
   private readonly tools = new Map<string, ToolAccumulator>();
-  private order: Array<
+  private readonly order: Array<
     | { kind: "text"; value: string }
     | { kind: "tool"; id: string }
     | { kind: "reasoning"; value: string; signature?: string }
   > = [];
+  private textChars = 0;
   private reasoningChars = 0;
   private stopReason: string | undefined;
-  private contextPercent = 0;
-  refusal: string | undefined;
+  private contextPercent: number | undefined;
+  private refused = false;
 
-  /**
-   * When set, tagged reasoning inside the answer is lifted into thinking
-   * blocks rather than left in the text. See kiro/thinking.ts.
-   */
-  constructor(private readonly splitThinking = false) {}
-
-  /** Feed one decoded Kiro event. Returns the accumulator if a tool was touched. */
   accept(event: KiroEvent): void {
     switch (event.type) {
       case "assistantResponse": {
         const chunk = event.data.content ?? "";
         if (!chunk) break;
-        this.texts.push(chunk);
+        this.textChars += chunk.length;
         const last = this.order[this.order.length - 1];
         if (last?.kind === "text") last.value += chunk;
         else this.order.push({ kind: "text", value: chunk });
@@ -126,7 +118,7 @@ export class ResponseBuilder {
       }
       case "metadata":
         if (event.data.stopReason) this.stopReason = event.data.stopReason;
-        this.refusal = refusalOf(event.data) ?? this.refusal;
+        this.refused ||= Boolean(event.data.stopDetails?.refusal);
         break;
       case "contextUsage":
         this.contextPercent = event.data.contextUsagePercentage ?? this.contextPercent;
@@ -136,21 +128,7 @@ export class ResponseBuilder {
     }
   }
 
-
-
-  get contextUsagePercent(): number {
-    return this.contextPercent;
-  }
-
-  get sawToolUse(): boolean {
-    return this.tools.size > 0;
-  }
-
-  get text(): string {
-    return this.texts.join("");
-  }
-
-  blocks(): AnthropicContentBlock[] {
+  private blocks(): AnthropicContentBlock[] {
     const out: AnthropicContentBlock[] = [];
     for (const item of this.order) {
       if (item.kind === "reasoning") {
@@ -158,16 +136,7 @@ export class ResponseBuilder {
         continue;
       }
       if (item.kind === "text") {
-        if (!item.value) continue;
-        if (!this.splitThinking) {
-          out.push({ type: "text", text: item.value });
-          continue;
-        }
-        for (const piece of splitThinkingText(item.value)) {
-          out.push(
-            piece.kind === "thinking" ? { type: "thinking", thinking: piece.text } : { type: "text", text: piece.text },
-          );
-        }
+        out.push({ type: "text", text: item.value });
       } else {
         const acc = this.tools.get(item.id);
         if (!acc) continue;
@@ -177,22 +146,17 @@ export class ResponseBuilder {
     return out;
   }
 
-  usage(promptToken: number): AnthropicUsage {
-    const output = estimateTokens(this.text) + Math.ceil(this.reasoningChars / 4) + this.tools.size * 8;
-    const prompt = promptFromContext(this.contextPercent, output) ?? promptToken;
-    return usageOf(prompt, output);
-  }
-
   response(model: string, promptToken: number): MessagesResponse {
+    if (this.refused && this.order.length === 0) throw new AppError(422, "request_refused");
     return {
       id: messageId(),
       type: "message",
       role: "assistant",
       model,
       content: this.blocks(),
-      stop_reason: mapStopReason(this.stopReason, this.sawToolUse),
+      stop_reason: mapStopReason(this.stopReason, this.tools.size > 0),
       stop_sequence: null,
-      usage: this.usage(promptToken),
+      usage: estimateUsage(promptToken, this.textChars, this.reasoningChars, this.tools.size, this.contextPercent),
     };
   }
 }
@@ -203,7 +167,7 @@ export class ResponseBuilder {
  * A truncated stream can leave invalid JSON behind; an empty object is a better
  * outcome for the client than a thrown error mid-response.
  */
-export const parseToolInput = (json: string): Record<string, unknown> => {
+const parseToolInput = (json: string): Record<string, unknown> => {
   const trimmed = json.trim();
   if (!trimmed) return {};
   try {

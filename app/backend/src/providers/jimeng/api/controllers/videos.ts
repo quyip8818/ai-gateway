@@ -7,7 +7,6 @@ import logger from "@/lib/logger.ts";
 import type { JimengModelConfig } from "./models.ts";
 
 const DEFAULT_ASSISTANT_ID = 513695;
-export const DEFAULT_MODEL = "jimeng-video-seedance-2.0";
 const DRAFT_VERSION = "3.3.20";
 const WEB_VERSION = "7.5.0";
 const DEFAULT_VIDEO_DURATIONS = [5, 10];

@@ -7,7 +7,9 @@ export function createCatalog(store: Pick<Store, 'models' | 'listModels'>) {
       const models = await store.models(key);
       return {
         object: 'list',
-        data: models.map((model) => ({ object: 'model', ...model, owned_by: model.id.split('/')[0] })),
+        data: models.map(({ id, operation, capabilities, provider }) => ({
+          id, object: 'model', operation, capabilities, owned_by: provider === 'jimeng' ? 'bytedance' : provider,
+        })),
       };
     },
   };

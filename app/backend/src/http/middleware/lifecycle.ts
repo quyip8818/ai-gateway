@@ -19,7 +19,9 @@ export async function requestBoundary(ctx, next) {
           ? 'body_too_large'
           : status < 500
             ? 'invalid_request'
-            : 'upstream_error';
+            : /^\/v1\/(?:images|videos)(?:\/|$)/.test(ctx.path)
+              ? 'media_request_failed'
+              : 'upstream_error';
     ctx.status = status;
     const detail = {
       code,

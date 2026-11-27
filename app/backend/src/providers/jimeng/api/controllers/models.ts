@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import logger from "@/lib/logger.ts";
 import util from "@/lib/util.ts";
 import APIException from "@/lib/exceptions/APIException.ts";
@@ -10,8 +11,6 @@ export type JimengModelType = "image" | "video";
 export interface JimengModelConfig {
   id: string;
   type: JimengModelType;
-  name: string;
-  description: string;
   modelReqKey: string;
   defaultResolution: string;
   supportedResolutions: string[];
@@ -23,7 +22,6 @@ export interface JimengModelConfig {
   defaultDuration?: number;
   supportedDurations?: number[];
   source?: "static" | "dynamic";
-  raw?: any;
 }
 
 const DRAFT_VERSION = "3.3.20";
@@ -32,41 +30,12 @@ const MODEL_CACHE_TTL_MS = Number(process.env.JIMENG_MODEL_CACHE_TTL_MS || 5 * 6
 const SEEDANCE_2_DURATIONS = [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const IMAGE_UPSCALE_MODEL_KEY = "image_upscale_paz";
 const AURA_CROWD_TEST_MODEL_KEY = "dreamina_crowd_test";
-
-const IMAGE_REQ_KEY_IDS: Record<string, string> = {
-  high_aes_general_v50p_large: "jimeng-image-5.0-pro",
-  high_aes_general_v50: "jimeng-image-5.0-lite",
-  high_aes_general_v43: "jimeng-image-4.7",
-  high_aes_general_v42: "jimeng-image-4.6",
-  high_aes_general_v40l: "jimeng-image-4.5",
-  high_aes_general_v41: "jimeng-image-4.1",
-  high_aes_general_v40: "jimeng-image-4.0",
-  "high_aes_general_v30l_art_fangzhou:general_v3.0_18b": "jimeng-image-3.1",
-  "high_aes_general_v30l:general_v3.0_18b": "jimeng-image-3.0",
-  "high_aes_general_v20_L:general_v2.0_L": "jimeng-image-2.0-pro",
-};
-
-const VIDEO_REQ_KEY_IDS: Record<string, string> = {
-  dreamina_seedance_45_pro: "jimeng-video-seedance-2.5",
-  dreamina_seedance_40_mini: "jimeng-video-seedance-2.0-mini",
-  dreamina_seedance_40: "jimeng-video-seedance-2.0-fast",
-  dreamina_seedance_40_pro: "jimeng-video-seedance-2.0",
-  dreamina_seedance_40_vision: "jimeng-video-seedance-2.0-fast-vip",
-  dreamina_seedance_40_pro_vision: "jimeng-video-seedance-2.0-vip",
-  "dreamina_ic_generate_video_model_vgfm_3.5_pro": "jimeng-video-seedance-1.5-pro",
-  "dreamina_ic_generate_video_model_vgfm_3.0_pro": "jimeng-video-3.0-pro",
-  "dreamina_ic_generate_video_model_vgfm_3.0": "jimeng-video-3.0",
-  "dreamina_ic_generate_video_model_vgfm_3.0_fast": "jimeng-video-3.0-fast",
-  dreamina_ic_generate_video_model_vgfm_lite: "jimeng-video-s2.0",
-  "dreamina_ic_generate_video_model_vgfm1.0": "jimeng-video-2.0-pro",
-};
+export const SEEDREAM_55_MODEL_KEY = "high_aes_general_v55";
 
 const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
   {
-    id: "jimeng-image-5.0-pro",
+    id: "seedream-5.0-pro",
     type: "image",
-    name: "Seedream 5.0 Pro",
-    description: "Jimeng image generation model 5.0 Pro",
     modelReqKey: "high_aes_general_v50p_large",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k", "1.5k"],
@@ -74,10 +43,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-5.0-lite",
+    id: "seedream-5.0-lite",
     type: "image",
-    name: "Seedream 5.0 Lite",
-    description: "Jimeng image generation model 5.0 Lite",
     modelReqKey: "high_aes_general_v50",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -85,10 +52,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-4.7",
+    id: "seedream-4.7",
     type: "image",
-    name: "Seedream 4.7",
-    description: "Jimeng image generation model 4.7",
     modelReqKey: "high_aes_general_v43",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -96,10 +61,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-4.6",
+    id: "seedream-4.6",
     type: "image",
-    name: "Seedream 4.6",
-    description: "Jimeng image generation model 4.6",
     modelReqKey: "high_aes_general_v42",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -107,10 +70,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-4.5",
+    id: "seedream-4.5",
     type: "image",
-    name: "Seedream 4.5",
-    description: "Jimeng image generation model 4.5",
     modelReqKey: "high_aes_general_v40l",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -118,10 +79,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-4.1",
+    id: "seedream-4.1",
     type: "image",
-    name: "Seedream 4.1",
-    description: "Jimeng image generation model 4.1",
     modelReqKey: "high_aes_general_v41",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -129,10 +88,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-4.0",
+    id: "seedream-4.0",
     type: "image",
-    name: "Seedream 4.0",
-    description: "Jimeng image generation model 4.0",
     modelReqKey: "high_aes_general_v40",
     defaultResolution: "2k",
     supportedResolutions: ["4k", "2k"],
@@ -140,10 +97,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-3.1",
+    id: "seedream-3.1",
     type: "image",
-    name: "Seedream 3.1",
-    description: "Jimeng image generation model 3.1",
     modelReqKey: "high_aes_general_v30l_art_fangzhou:general_v3.0_18b",
     defaultResolution: "1k",
     supportedResolutions: ["1k"],
@@ -151,10 +106,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-3.0",
+    id: "seedream-3.0",
     type: "image",
-    name: "Seedream 3.0",
-    description: "Jimeng image generation model 3.0",
     modelReqKey: "high_aes_general_v30l:general_v3.0_18b",
     defaultResolution: "1k",
     supportedResolutions: ["1k"],
@@ -162,10 +115,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-image-2.0-pro",
+    id: "seedream-2.0-pro",
     type: "image",
-    name: "Seedream 2.0 Pro",
-    description: "Jimeng image generation model 2.0 Pro",
     modelReqKey: "high_aes_general_v20_L:general_v2.0_L",
     defaultResolution: "1k",
     supportedResolutions: ["1k"],
@@ -176,10 +127,8 @@ const STATIC_IMAGE_MODELS: JimengModelConfig[] = [
 
 const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
   {
-    id: "jimeng-video-seedance-2.5",
+    id: "seedance-2.5",
     type: "video",
-    name: "Seedance 2.5",
-    description: "Jimeng Seedance 2.5 video generation model",
     modelReqKey: "dreamina_seedance_45_pro",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -187,10 +136,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0-mini",
+    id: "seedance-2.0-mini",
     type: "video",
-    name: "Seedance 2.0 Mini",
-    description: "Jimeng Seedance 2.0 Mini video generation model",
     modelReqKey: "dreamina_seedance_40_mini",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -202,10 +149,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0-fast",
+    id: "seedance-2.0-fast",
     type: "video",
-    name: "Seedance 2.0 Fast",
-    description: "Jimeng Seedance 2.0 Fast video generation model",
     modelReqKey: "dreamina_seedance_40",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -217,10 +162,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0",
+    id: "seedance-2.0",
     type: "video",
-    name: "Seedance 2.0",
-    description: "Jimeng Seedance 2.0 video generation model",
     modelReqKey: "dreamina_seedance_40_pro",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -232,10 +175,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0-fast-vip",
+    id: "seedance-2.0-fast-vip",
     type: "video",
-    name: "Seedance 2.0 Fast VIP Vision",
-    description: "Jimeng Seedance 2.0 Fast VIP Vision video generation model",
     modelReqKey: "dreamina_seedance_40_vision",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -247,10 +188,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-2.0-vip",
+    id: "seedance-2.0-vip",
     type: "video",
-    name: "Seedance 2.0 VIP Vision",
-    description: "Jimeng Seedance 2.0 VIP Vision video generation model",
     modelReqKey: "dreamina_seedance_40_pro_vision",
     defaultResolution: "720p",
     supportedResolutions: ["720p", "1080p", "4k"],
@@ -266,10 +205,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-seedance-1.5-pro",
+    id: "seedance-1.5-pro",
     type: "video",
-    name: "Seedance 1.5 Pro",
-    description: "Jimeng Seedance 1.5 Pro video generation model",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm_3.5_pro",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -279,10 +216,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-3.0-pro",
+    id: "video-3.0-pro",
     type: "video",
-    name: "Jimeng Video 3.0 Pro",
-    description: "Jimeng video generation model 3.0 Pro",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm_3.0_pro",
     defaultResolution: "1080p",
     supportedResolutions: ["1080p"],
@@ -292,10 +227,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-3.0",
+    id: "video-3.0",
     type: "video",
-    name: "Jimeng Video 3.0",
-    description: "Jimeng video generation model 3.0",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm_3.0",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -305,10 +238,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-3.0-fast",
+    id: "video-3.0-fast",
     type: "video",
-    name: "Jimeng Video 3.0 Fast",
-    description: "Jimeng video generation model 3.0 Fast",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm_3.0_fast",
     defaultResolution: "720p",
     supportedResolutions: ["720p", "1080p"],
@@ -321,10 +252,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-s2.0",
+    id: "video-s2.0",
     type: "video",
-    name: "Jimeng Video S2.0",
-    description: "Jimeng video generation model S2.0",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm_lite",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -334,10 +263,8 @@ const STATIC_VIDEO_MODELS: JimengModelConfig[] = [
     source: "static",
   },
   {
-    id: "jimeng-video-2.0-pro",
+    id: "video-2.0-pro",
     type: "video",
-    name: "Jimeng Video 2.0 Pro",
-    description: "Jimeng video generation model 2.0 Pro",
     modelReqKey: "dreamina_ic_generate_video_model_vgfm1.0",
     defaultResolution: "720p",
     supportedResolutions: ["720p"],
@@ -370,46 +297,18 @@ function cloneModelConfig(model: JimengModelConfig): JimengModelConfig {
   };
 }
 
-export function getStaticModelConfigs(type?: JimengModelType) {
-  const models = [...STATIC_IMAGE_MODELS, ...STATIC_VIDEO_MODELS];
-  return models
-    .filter((model) => !type || model.type === type)
-    .map(cloneModelConfig);
-}
+export const preferredImageModels = ["seedream-5.0-lite", "seedream-5.5"];
+export const preferredVideoModels = ["seedance-2.0"];
 
-function getStaticModelConfig(modelIdOrReqKey: string, type?: JimengModelType) {
-  return getStaticModelConfigs(type).find(
-    (model) =>
-      model.id === modelIdOrReqKey ||
-      model.modelReqKey === modelIdOrReqKey
-  );
-}
+const staticModels = [...STATIC_IMAGE_MODELS, ...STATIC_VIDEO_MODELS];
 
-function compactText(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
+function modelId(type: JimengModelType, modelReqKey: string) {
+  if (type === "image" && modelReqKey === SEEDREAM_55_MODEL_KEY) return "seedream-5.5";
+  if (type === "image" && modelReqKey === AURA_CROWD_TEST_MODEL_KEY) return "aura";
 
-function getStringField(obj: any, keys: string[]) {
-  for (const key of keys) {
-    const value = obj?.[key];
-    if (typeof value === "string" && value.trim()) return compactText(value);
-  }
-}
-
-function slugify(value: string) {
-  const slug = value
-    .toLowerCase()
-    .replace(/[^a-z0-9.]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug || "model";
-}
-
-function makeDynamicId(type: JimengModelType, modelReqKey: string, name?: string) {
-  const known = type === "image" ? IMAGE_REQ_KEY_IDS[modelReqKey] : VIDEO_REQ_KEY_IDS[modelReqKey];
-  if (known) return known;
-
-  const base = name && /[a-z0-9]/i.test(name) ? name : modelReqKey;
-  return `jimeng-${type}-${slugify(base)}`;
+  // Some catalog entries have no unique public name.
+  const suffix = createHash("sha256").update(modelReqKey).digest("hex").slice(0, 16);
+  return `${type}-${suffix}`;
 }
 
 function findObjectsWithModelReqKey(value: any, out: any[] = [], seen = new Set<any>()) {
@@ -536,19 +435,7 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
   if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
   if (modelReqKey === IMAGE_UPSCALE_MODEL_KEY) return null;
 
-  const staticConfig = getStaticModelConfig(modelReqKey, "image");
-  const name =
-    getStringField(candidate, [
-      "name",
-      "model_name",
-      "display_name",
-      "displayName",
-      "title",
-      "label",
-      "text",
-    ]) ||
-    staticConfig?.name ||
-    modelReqKey;
+  const staticConfig = STATIC_IMAGE_MODELS.find((model) => model.modelReqKey === modelReqKey);
   const preferredResolutions = sortImageResolutions(collectPreferredResolutions(candidate));
   const supportedResolutions =
     preferredResolutions.length > 0
@@ -562,26 +449,20 @@ function parseImageModel(candidate: any): JimengModelConfig | null {
 
   return {
     ...staticConfig,
-    id: makeDynamicId("image", modelReqKey, name),
+    id: staticConfig?.id ?? modelId("image", modelReqKey),
     type: "image",
-    name,
-    description:
-      getStringField(candidate, ["description", "desc", "sub_title", "subtitle"]) ||
-      staticConfig?.description ||
-      `Jimeng image model ${name}`,
     modelReqKey,
     defaultResolution:
-      staticConfig?.defaultResolution ||
-      (supportedResolutions.includes("2k") ? "2k" : supportedResolutions[0] || "1k"),
+      staticConfig && supportedResolutions.includes(staticConfig.defaultResolution)
+        ? staticConfig.defaultResolution
+        : supportedResolutions.includes("2k") ? "2k" : supportedResolutions[0],
     supportedResolutions,
     // Aura enforces the catalog options on submit. Other models, such as V8.2,
     // can accept counts beyond the choices shown in the web UI.
     supportedGenerateCounts: modelReqKey === AURA_CROWD_TEST_MODEL_KEY
       ? (supportedGenerateCounts.length ? supportedGenerateCounts : [2])
       : undefined,
-    benefitCountByResolution: staticConfig?.benefitCountByResolution,
     source: "dynamic",
-    raw: candidate,
   };
 }
 
@@ -589,20 +470,8 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
   const modelReqKey = candidate.model_req_key || candidate.modelReqKey;
   if (typeof modelReqKey !== "string" || !modelReqKey.trim()) return null;
 
-  const staticConfig = getStaticModelConfig(modelReqKey, "video");
-  const name =
-    getStringField(candidate, [
-      "name",
-      "model_name",
-      "display_name",
-      "displayName",
-      "title",
-      "label",
-      "text",
-    ]) ||
-    staticConfig?.name ||
-    modelReqKey;
-  const id = makeDynamicId("video", modelReqKey, name);
+  const staticConfig = STATIC_VIDEO_MODELS.find((model) => model.modelReqKey === modelReqKey);
+  const id = staticConfig?.id ?? modelId("video", modelReqKey);
   if (getVideoModelOperation(modelReqKey) !== "generate" ||
       getVideoModelOperation(id) !== "generate") return null;
   const supportedResolutions = inferVideoResolutions(staticConfig, candidate);
@@ -612,15 +481,11 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
     ...staticConfig,
     id,
     type: "video",
-    name,
-    description:
-      getStringField(candidate, ["description", "desc", "sub_title", "subtitle"]) ||
-      staticConfig?.description ||
-      `Jimeng video model ${name}`,
     modelReqKey,
     defaultResolution:
-      staticConfig?.defaultResolution ||
-      (supportedResolutions.includes("720p") ? "720p" : supportedResolutions[0] || "720p"),
+      staticConfig && supportedResolutions.includes(staticConfig.defaultResolution)
+        ? staticConfig.defaultResolution
+        : supportedResolutions.includes("720p") ? "720p" : supportedResolutions[0],
     supportedResolutions,
     benefits,
     defaultBenefit:
@@ -630,7 +495,6 @@ function parseVideoModel(candidate: any): JimengModelConfig | null {
       "basic_video_operation_vgfm_v_three",
     supportsLongDuration: staticConfig?.supportsLongDuration ?? true,
     source: "dynamic",
-    raw: candidate,
   };
 }
 
@@ -698,7 +562,7 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
   const cacheKey = util.md5(refreshToken).slice(0, 12);
   const cached = dynamicCache.get(cacheKey);
   if (!refresh && cached && cached.expiresAt > now) {
-    return cached.models.map(cloneModelConfig);
+    return cached.models;
   }
 
   const results = await Promise.allSettled([
@@ -718,7 +582,7 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
   });
 
   if (models.length === 0) {
-    if (cached?.models?.length) return cached.models.map(cloneModelConfig);
+    if (cached) return cached.models;
     throw new Error("No dynamic Jimeng model config returned");
   }
 
@@ -726,121 +590,38 @@ async function fetchDynamicModelConfigs(refreshToken: string, refresh = false) {
     expiresAt: now + MODEL_CACHE_TTL_MS,
     models,
   });
-  return models.map(cloneModelConfig);
+  return models;
 }
 
-function mergeModelConfigs(staticModels: JimengModelConfig[], dynamicModels: JimengModelConfig[]) {
-  const byId = new Map<string, JimengModelConfig>();
-  const byReqKey = new Map<string, JimengModelConfig>();
+export async function listModelConfigs(refreshToken: string, refresh = false) {
+  let dynamicModels: JimengModelConfig[] = [];
+  try {
+    dynamicModels = await fetchDynamicModelConfigs(refreshToken, refresh);
+  } catch (error) {
+    logger.warn(`Using static Jimeng model config: ${error.message}`);
+  }
 
   const dynamicTypes = new Set(dynamicModels.map((model) => model.type));
-  for (const model of staticModels) {
-    const cloned = cloneModelConfig(model);
-    byReqKey.set(`${cloned.type}:${cloned.modelReqKey}`, cloned);
-    if (dynamicModels.length === 0 || !dynamicTypes.has(model.type)) {
-      byId.set(cloned.id, cloned);
-    }
-  }
-
-  for (const model of dynamicModels) {
-    const staticMatch = byReqKey.get(`${model.type}:${model.modelReqKey}`);
-    const merged = cloneModelConfig({
-      ...staticMatch,
-      ...model,
-      id: staticMatch?.id || model.id,
-      supportedResolutions:
-        model.supportedResolutions?.length
-          ? model.supportedResolutions
-          : staticMatch?.supportedResolutions || [],
-      benefits: {
-        ...staticMatch?.benefits,
-        ...model.benefits,
-      },
-      benefitCountByResolution:
-        model.benefitCountByResolution || staticMatch?.benefitCountByResolution,
-      source: "dynamic",
-    });
-    byId.set(merged.id, merged);
-  }
-
-  return [...byId.values()];
-}
-
-export async function listModelConfigs(
-  refreshToken?: string,
-  options: { refresh?: boolean; type?: JimengModelType } = {}
-) {
-  const staticModels = getStaticModelConfigs(options.type).filter(
-    model => model.type !== "video" ||
+  const fallback = staticModels.filter((model) =>
+    !dynamicTypes.has(model.type) &&
+    (model.type !== "video" ||
       (getVideoModelOperation(model.id) === "generate" &&
-        getVideoModelOperation(model.modelReqKey) === "generate")
+        getVideoModelOperation(model.modelReqKey) === "generate"))
   );
-  let dynamicModels: JimengModelConfig[] = [];
-
-  if (refreshToken) {
-    try {
-      dynamicModels = await fetchDynamicModelConfigs(refreshToken, options.refresh);
-    } catch (error) {
-      logger.warn(`Using static Jimeng model config: ${error.message}`);
-    }
-  }
-
-  return mergeModelConfigs(staticModels, dynamicModels).filter(
-    (model) => !options.type || model.type === options.type
-  );
+  return [...dynamicModels, ...fallback].map(cloneModelConfig);
 }
 
-// Keep retired identifiers on the video validation path so chat cannot fall back to an image.
-function assertVideoGenerationModel(identifier: string) {
-  const operation = getVideoModelOperation(identifier);
-  if (operation !== "generate") {
-    throw new APIException(
-      EX.API_REQUEST_PARAMS_INVALID,
-      operation === "recast"
-        ? "已接入的视频复刻模型请使用 /v1/videos/edits，需要源视频和参考图"
-        : "视频超清需要已有视频，当前视频生成接口不提供超清功能"
-    );
+async function resolveModelConfig(modelReqKey: string, type: JimengModelType, refreshToken: string) {
+  const models = await listModelConfigs(refreshToken);
+  const model = models.find((candidate) => candidate.type === type && candidate.modelReqKey === modelReqKey);
+  if (!model) {
+    throw new APIException(EX.API_REQUEST_PARAMS_INVALID, "当前账号不支持所选模型");
   }
+  return model;
 }
 
-export async function resolveModelConfig(
-  modelIdOrReqKey: string,
-  type: JimengModelType,
-  refreshToken?: string
-) {
-  if (type === "video") assertVideoGenerationModel(modelIdOrReqKey);
-  if (
-    type === "image" &&
-    (modelIdOrReqKey === IMAGE_UPSCALE_MODEL_KEY ||
-      modelIdOrReqKey === makeDynamicId("image", IMAGE_UPSCALE_MODEL_KEY))
-  ) {
-    throw new APIException(
-      EX.API_REQUEST_PARAMS_INVALID,
-      "图片超清属于需要原图的后处理功能，当前图片生成接口不提供此功能"
-    );
-  }
-  const models = await listModelConfigs(refreshToken, { type });
-  if (type === "video") {
-    const model = models.find(candidate => candidate.id === modelIdOrReqKey)
-      ?? getStaticModelConfigs("video").find(candidate => candidate.id === modelIdOrReqKey);
-    if (!model) {
-      throw new APIException(
-        EX.API_REQUEST_PARAMS_INVALID,
-        "未知视频模型，请使用 GET /v1/models?type=video 返回的模型 ID"
-      );
-    }
-    assertVideoGenerationModel(model.modelReqKey);
-    return model;
-  }
-  return models.find(model =>
-    model.id === modelIdOrReqKey ||
-    model.modelReqKey === modelIdOrReqKey
-  ) ?? getStaticModelConfig(modelIdOrReqKey, type)
-    ?? getStaticModelConfig("jimeng-image-5.0-lite", type)!;
-}
+export const resolveImageModelConfig = (modelReqKey: string, refreshToken: string) =>
+  resolveModelConfig(modelReqKey, "image", refreshToken);
 
-export const resolveImageModelConfig = (modelIdOrReqKey: string, refreshToken?: string) =>
-  resolveModelConfig(modelIdOrReqKey, "image", refreshToken);
-
-export const resolveVideoModelConfig = (modelIdOrReqKey: string, refreshToken?: string) =>
-  resolveModelConfig(modelIdOrReqKey, "video", refreshToken);
+export const resolveVideoModelConfig = (modelReqKey: string, refreshToken: string) =>
+  resolveModelConfig(modelReqKey, "video", refreshToken);

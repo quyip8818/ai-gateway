@@ -57,7 +57,7 @@ CREATE INDEX video_jobs_due ON video_jobs(run_after) WHERE status NOT IN ('compl
 CREATE INDEX video_jobs_pending_account ON video_jobs(account_id) WHERE status NOT IN ('completed','failed');
 CREATE TABLE media_assets (
   id uuid PRIMARY KEY, owner_id uuid NOT NULL REFERENCES api_keys,
-  video_id uuid UNIQUE, mime text NOT NULL, bytes bigint NOT NULL CHECK(bytes>0), model text NOT NULL,
+  video_id uuid UNIQUE, mime text NOT NULL, bytes bigint NOT NULL CHECK(bytes>0), provider text NOT NULL, model text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   FOREIGN KEY(owner_id,video_id) REFERENCES video_jobs(owner_id,id)
 );

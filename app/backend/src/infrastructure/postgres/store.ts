@@ -108,7 +108,7 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
         ],
       );
       await fingerprints.record(client, id, hashes);
-      await insertAccountModels(client, id, provider, models);
+      await insertAccountModels(client, id, models);
       return { id, model_count: models.length };
     }
 
@@ -132,8 +132,8 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
 
   async function models(key) {
     return (
-      await db.query(
-        `SELECT DISTINCT ON(m.public_id,m.operation) m.public_id AS id,m.operation,m.capabilities
+      await db.query<{ id: string; operation: string; capabilities: Record<string, unknown>; provider: Provider }>(
+        `SELECT DISTINCT ON(m.public_id,m.operation) m.public_id AS id,m.operation,m.capabilities,a.provider
       FROM account_models m JOIN provider_accounts a ON a.id=m.account_id WHERE ${allowed}
       AND m.operation=ANY($2) ORDER BY m.public_id,m.operation,a.id`,
         [key.id, key.scopes],
@@ -164,8 +164,8 @@ export function openStore(connection: string, { seal, unseal, digest }: GatewayC
       if (!account) {
         const visible = await client.query(
           `SELECT 1 FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
-          WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 LIMIT 1`,
-          [key.id, model, operation],
+          WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4) LIMIT 1`,
+          [key.id, model, operation, fixed],
         );
         throw new AppError(
           visible.rowCount ? 429 : 404,

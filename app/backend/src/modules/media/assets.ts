@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { AppError, isUUID } from '../../domain.ts';
+import { AppError, isUUID, type Provider } from '../../domain.ts';
 import type { GatewayCrypto } from '../../infrastructure/crypto.ts';
 import type { Files } from '../../infrastructure/files/storage.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
@@ -9,10 +9,10 @@ export function createMediaAssets(
   files: Pick<Files, 'read' | 'write'>,
   crypto: Pick<GatewayCrypto, 'signedMedia' | 'verifyMedia'>,
 ) {
-  async function save(owner: string, model: string, mime: string, bytes: Buffer) {
+  async function save(owner: string, provider: Provider, model: string, mime: string, bytes: Buffer) {
     const id = randomUUID();
     await files.write(id, bytes);
-    await store.addAsset({ id, owner, mime, bytes: bytes.length, model });
+    await store.addAsset({ id, owner, mime, bytes: bytes.length, provider, model });
     return id;
   }
 

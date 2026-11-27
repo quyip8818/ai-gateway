@@ -187,6 +187,7 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
     throw new Error('Unexpected outbound host: ' + url.hostname);
   };
 
+  const insufficientCreditJobs = new Set();
   axios.defaults.adapter = async (config) => {
     const url = new URL(config.url);
     let data;
@@ -225,7 +226,18 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
                 },
               ],
             }
-          : {};
+          : url.pathname === '/mweb/v1/get_common_config'
+            ? {
+              model_list: [
+                { model_req_key: 'high_aes_general_v55', name: 'Image 5.5', supported_resolutions: ['2k', '1k'] },
+                ...(config.headers.get('Cookie').includes('sessionid=test-jimeng-replacement') ? [] : [
+                  { model_req_key: 'high_aes_general_v50', name: 'Image 5.0 Lite' },
+                ]),
+                { model_req_key: 'fixture_internal_image_a', name: 'Same name' },
+                { model_req_key: 'fixture_internal_image_b', name: 'Same name' },
+              ],
+            }
+            : {};
       } else if (url.pathname.endsWith('/get_upload_token'))
         result = { access_key_id: 'fixture', secret_access_key: 'fixture', session_token: 'fixture' };
       else if (url.pathname.endsWith('/user_credit'))
@@ -247,7 +259,16 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
         const id = submission.submit_id;
         const contract = jimengSubmission(config);
         jimengCaptures.push(contract);
-        if (!process.env.GATEWAY_CAPTURE_JIMENG) {
+        if (config.data.includes('fixture credit fallback')) {
+          assert.equal(submission.extend.root_model, 'high_aes_general_v55');
+          const resolution = contract.body.metrics_extra.sceneOptions[0].resolutionType;
+          assert.ok(resolution === '2k' || resolution === '1k');
+          if (resolution === '2k') insufficientCreditJobs.add(id);
+        } else if (config.data.includes('fixture seedream 5.5')) {
+          assert.equal(submission.extend.root_model, 'high_aes_general_v55');
+          assert.equal(config.params.da_version, '3.1.3');
+          assert.equal(config.params.commerce_with_input_video, '1');
+        } else if (!process.env.GATEWAY_CAPTURE_JIMENG) {
           const expected = expectedJimengSubmissions();
           const prompt = Object.keys(expected).find((value) => config.data.includes(value));
           assert.ok(prompt, 'Jimeng fixture has no source baseline for this prompt');
@@ -291,6 +312,7 @@ if (process.env.GATEWAY_TEST_UPSTREAM === '1') {
               }],
           },
         };
+        if (insufficientCreditJobs.has(id)) result[id] = { status: '30', fail_code: 2039 };
         if (id === recastSource) {
           result[id].workspace_id = 1;
           result[id].draft_content = JSON.stringify({

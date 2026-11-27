@@ -75,10 +75,16 @@ export async function invokeKiro(kind: string, credential, model: string, input,
   const kiroPayload = buildPayload(payload, model, credential.profileArn, randomUUID());
   const body = JSON.stringify(kiroPayload);
   if (Buffer.byteLength(body) > MAX_PAYLOAD_BYTES) throw new AppError(413, 'kiro_payload_too_large');
-  const events = invoke(body, credential.accessToken, credential.apiRegion, kind === 'oidc', signal);
-  const prompt = estimateTokens(JSON.stringify(payload.messages));
-  if (payload.stream) return streamResponse(events, input.model, prompt, signal);
+  const prompt = Math.max(1, estimateTokens(JSON.stringify(payload.messages).length));
+  if (payload.stream) {
+    const cancelled = new AbortController();
+    const events = invoke(body, credential.accessToken, credential.apiRegion, kind === 'oidc',
+      AbortSignal.any([signal, cancelled.signal]));
+    return streamResponse(events, input.model, prompt, () => cancelled.abort());
+  }
   const response = new ResponseBuilder();
-  for await (const event of events) response.accept(event);
+  for await (const event of invoke(body, credential.accessToken, credential.apiRegion, kind === 'oidc', signal)) {
+    response.accept(event);
+  }
   return Response.json(response.response(input.model, prompt));
 }

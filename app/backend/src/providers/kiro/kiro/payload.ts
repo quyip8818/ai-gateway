@@ -1,6 +1,6 @@
 import type { MessagesRequest } from "../anthropic/type.ts";
 import { convertTools, type NormalMessage, normalizeMessages, systemText } from "./convert.ts";
-import { nativeThinking, THINKING_FIELDS, THINKING_INSTRUCTION, thinkingAllowed, thinkingAsked } from "./thinking.ts";
+import { THINKING_FIELDS, useNativeThinking } from "./thinking.ts";
 import type { KiroHistoryEntry, KiroPayload, KiroUserInputMessage } from "./type.ts";
 
 /**
@@ -46,17 +46,8 @@ export const buildPayload = (
 
   let system = systemText(request.system);
   if (documentation) system = system ? system + documentation : documentation.trim();
-  // Reasoning is asked for here and parsed back out of the answer; the service
-  // has no parameter for it. See kiro/thinking.ts for why it is not a tool.
-  const native = thinkingAsked(request) && nativeThinking(modelId);
-  if (thinkingAsked(request) && !native && thinkingAllowed(modelId)) {
-    system = system ? `${system}\n\n${THINKING_INSTRUCTION}` : THINKING_INSTRUCTION;
-  }
-
-  // Past reasoning is not replayed with native thinking on: the model thinks
-  // afresh each turn, as the Messages API does with earlier turns, and a
-  // transcript full of written-out reasoning is what Opus's guard refuses.
-  const messages = normalizeMessages(request.messages, hasTools, !native);
+  const native = useNativeThinking(request, modelId);
+  const messages = normalizeMessages(request.messages, hasTools);
   if (messages.length === 0) throw new Error("No messages to send");
 
   const historyMessages = messages.slice(0, -1);

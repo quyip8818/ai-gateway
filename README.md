@@ -22,13 +22,17 @@
 
 Kiro Desktop 导入需要 `refreshToken` 或 `accessToken`。OIDC 续期需要与原授权匹配的 `clientId`、`clientSecret`、`region` 和 `refreshToken`。可选字段 `apiRegion` 和 `profileArn` 用于相应的 Kiro 数据面。
 
+Kiro 的扩展思考使用上游原生推理事件。已知不支持该参数的模型按普通消息调用。
+
 Codex 浏览器授权在控制台生成链接。完成授权后，将浏览器的回调地址粘贴到控制台。默认回调是 `http://localhost:1455/auth/callback`。
 
 首次启动使用空的 PostgreSQL 数据库。调用 Key 按产品授权，也能访问之后添加的同产品账号。管理接口创建 Key 使用 `providers` 产品 ID 数组。
 
-所有公开生成接口使用网关 Key，接受 `Authorization: Bearer <key>` 或 `x-api-key`。视频创建可带 `Idempotency-Key`，通过 `GET /v1/videos/:id` 查状态，通过 `GET /v1/videos/:id/content` 下载。复刻接受已授权的源任务 `video.id`，或同一上游账号可查询的即梦复刻任务 `video.upstream_id`。
+所有公开生成接口使用网关 Key，接受 `Authorization: Bearer <key>` 或 `x-api-key`。图片和视频请求的 `model` 使用 `GET /v1/models` 返回的 ID，例如 `seedream-5.5` 和 `seedance-2.0`。生成响应也使用这些 ID。省略 `model` 时，网关从当前密钥可用的目录中选择默认模型。
 
-即梦图片生成和编辑响应包含扩展字段 `usage.credits_used`。网关在生成后查询一次近期消费流水，按 `submit_id` 匹配该任务的已结算扣点。流水尚未确认、未出现在第一页或查询失败时，API 返回 `null`，请求记录显示「—」。
+视频创建可带 `Idempotency-Key`，通过 `GET /v1/videos/:id` 查状态，通过 `GET /v1/videos/:id/content` 下载。复刻接受已授权的源任务 `video.id`，或已配置账号可查询的外部复刻任务 `video.reference_id`。
+
+图片生成和编辑响应的 `usage.credits_used` 提供已结算的上游扣点，供下游计费使用。网关在生成后查询一次近期消费流水，按 `submit_id` 匹配任务。流水尚未确认、未出现在第一页或查询失败时，API 返回 `null`，管理端请求记录显示「—」。`null` 表示扣点未知。
 
 图片响应的 `resolution` 是生成档位，每个 `data` 项的 `width`、`height` 来自下载的图片文件。视频响应的 `size`、`seconds` 和 `resolution` 是任务规格，完成后的 `output` 包含即梦返回的成品 `width`、`height` 和 `duration_ms`。无法确认的成品规格返回 `null`。
 

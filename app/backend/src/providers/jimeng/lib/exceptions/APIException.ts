@@ -1,14 +1,16 @@
-import Exception from './Exception.ts';
+type ExceptionDefinition = readonly [number, string];
 
-export default class APIException extends Exception {
+export default class APIException extends Error {
+    readonly code: number;
+    readonly httpStatusCode?: number;
 
-    /**
-     * 构造异常
-     *
-     * @param {[number, string]} exception 异常
-     */
-    constructor(exception: (string | number)[], errmsg?: string) {
-        super(exception, errmsg);
+    constructor([code, defaultMessage]: ExceptionDefinition, message = defaultMessage, httpStatusCode?: number) {
+        super(message);
+        this.code = code;
+        this.httpStatusCode = httpStatusCode;
     }
 
+    compare([code]: ExceptionDefinition) {
+        return this.code === code;
+    }
 }

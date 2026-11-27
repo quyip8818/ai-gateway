@@ -189,9 +189,8 @@ export async function request(
     logger.info(`请求数据: ${JSON.stringify(options.data || {})}`);
   }
 
-  // 浏览器传输：流式响应（对话类接口）保持直连，其余接口按配置决定是否走浏览器
   const mode = jimengTransportMode() ?? startupBrowserTransportMode;
-  const canUseBrowser = mode !== "off" && options.responseType != "stream";
+  const canUseBrowser = mode !== "off";
   const riskControlKey = policy.model ? `${uri}#${policy.model}` : getRiskControlKey(uri, options.data);
   const session = canUseBrowser ? createHash("sha256").update(refreshToken).digest("hex") : "";
   const useBrowser = canUseBrowser && (mode === "always" || browserTransport.isRequired(session, riskControlKey));
@@ -237,9 +236,6 @@ export async function request(
 
       // 记录响应状态和头信息
       logger.info(`响应状态: ${response.status} ${response.statusText}`);
-
-      // 流式响应直接返回response
-      if (options.responseType == "stream") return response;
 
       // 记录响应数据摘要
       if (logPayload) {

@@ -1,38 +1,18 @@
 import { isRecord } from "./utils.js"
 
-export const DEFAULT_CODEX_CLIENT_VERSION = "0.144.1"
+const DEFAULT_CODEX_CLIENT_VERSION = "0.144.1"
 
 const CODEX_VERSION_CACHE_TTL_MS = 60 * 60 * 1000
 const CODEX_REGISTRY_URL = "https://registry.npmjs.org/@openai/codex/latest"
-
-type FetchLike = typeof fetch
 
 export type CodexModelInfo = {
 	slug: string
 	visibility?: string
 	supportedInApi?: boolean
-	minimalClientVersion?: string
 	useResponsesLite?: boolean
-	preferWebsockets?: boolean
 	supportVerbosity?: boolean
 	defaultVerbosity?: string
 	defaultReasoningLevel?: string
-	defaultReasoningSummary?: string
-	supportsParallelToolCalls?: boolean
-	availableInPlans?: string[]
-	raw: Record<string, unknown>
-}
-
-export type ResolveCodexClientVersionOptions = {
-	codexVersion?: string
-	fetchImpl?: FetchLike
-	onWarning?: (message: string) => void
-}
-
-export type FetchCodexModelCatalogOptions = ResolveCodexClientVersionOptions
-
-export type CodexModelCatalogClient = {
-	request(path: string, init?: RequestInit): Promise<Response>
 }
 
 type RegistryPackageResponse = {
@@ -53,11 +33,6 @@ const optionalString = (value: unknown): string | undefined =>
 const optionalBoolean = (value: unknown): boolean | undefined =>
 	typeof value === "boolean" ? value : undefined
 
-const optionalStrings = (value: unknown): string[] | undefined =>
-	Array.isArray(value)
-		? value.filter((item): item is string => typeof item === "string")
-		: undefined
-
 const toCodexModelInfo = (value: unknown): CodexModelInfo | undefined => {
 	if (!isRecord(value)) {
 		return undefined
@@ -72,18 +47,10 @@ const toCodexModelInfo = (value: unknown): CodexModelInfo | undefined => {
 		slug,
 		visibility: optionalString(value.visibility),
 		supportedInApi: optionalBoolean(value.supported_in_api),
-		minimalClientVersion: optionalString(value.minimal_client_version),
 		useResponsesLite: optionalBoolean(value.use_responses_lite),
-		preferWebsockets: optionalBoolean(value.prefer_websockets),
 		supportVerbosity: optionalBoolean(value.support_verbosity),
 		defaultVerbosity: optionalString(value.default_verbosity),
 		defaultReasoningLevel: optionalString(value.default_reasoning_level),
-		defaultReasoningSummary: optionalString(value.default_reasoning_summary),
-		supportsParallelToolCalls: optionalBoolean(
-			value.supports_parallel_tool_calls,
-		),
-		availableInPlans: optionalStrings(value.available_in_plans),
-		raw: value,
 	}
 }
 
@@ -111,14 +78,7 @@ let cachedCodexClientVersion: string | undefined
 let codexClientVersionCacheExpiresAt = 0
 let inflightCodexClientVersion: Promise<string> | undefined
 
-export const resolveCodexClientVersion = async (
-	options: ResolveCodexClientVersionOptions = {},
-): Promise<string> => {
-	const explicitVersion = normalizeVersion(options.codexVersion)
-	if (explicitVersion) {
-		return explicitVersion
-	}
-
+const resolveCodexClientVersion = async (): Promise<string> => {
 	const now = Date.now()
 	if (cachedCodexClientVersion && now < codexClientVersionCacheExpiresAt) {
 		return cachedCodexClientVersion
@@ -128,11 +88,11 @@ export const resolveCodexClientVersion = async (
 		return inflightCodexClientVersion
 	}
 
-	const fetchImpl = options.fetchImpl ?? globalThis.fetch
 	inflightCodexClientVersion = (async () => {
 		try {
-			const response = await fetchImpl(CODEX_REGISTRY_URL, {
+			const response = await fetch(CODEX_REGISTRY_URL, {
 				headers: { accept: "application/json" },
+				signal: AbortSignal.timeout(2_500),
 			})
 			if (response.ok) {
 				const parsed = (await response.json()) as RegistryPackageResponse
@@ -146,9 +106,6 @@ export const resolveCodexClientVersion = async (
 			}
 		} catch {}
 
-		options.onWarning?.(
-			`Could not determine the latest Codex version. Falling back to ${DEFAULT_CODEX_CLIENT_VERSION}. Pass a version explicitly if you need to override it.`,
-		)
 		cachedCodexClientVersion = DEFAULT_CODEX_CLIENT_VERSION
 		codexClientVersionCacheExpiresAt = Date.now() + CODEX_VERSION_CACHE_TTL_MS
 		return DEFAULT_CODEX_CLIENT_VERSION
@@ -160,11 +117,10 @@ export const resolveCodexClientVersion = async (
 }
 
 export const fetchCodexModelCatalog = async (
-	client: CodexModelCatalogClient,
-	options: FetchCodexModelCatalogOptions = {},
+	request: (path: string) => Promise<Response>,
 ): Promise<CodexModelInfo[]> => {
-	const clientVersion = await resolveCodexClientVersion(options)
-	const response = await client.request(
+	const clientVersion = await resolveCodexClientVersion()
+	const response = await request(
 		`/models?client_version=${encodeURIComponent(clientVersion)}`,
 	)
 	const bodyText = await response.text()

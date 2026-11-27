@@ -4,7 +4,8 @@ import { AppError } from '../../domain.ts';
 import { withJimengRequest } from './context.ts';
 import { getTokenLiveStatus } from './api/controllers/core.ts';
 import { listModelConfigs } from './api/controllers/models.ts';
-import { VIDEO_RECAST_MODELS } from './lib/configs/video-recast-models.ts';
+import { videoRecastModel } from './lib/configs/video-recast-models.ts';
+import { getSupportedVideoDurations } from './api/controllers/videos.ts';
 import EX from './api/consts/exceptions.ts';
 import APIException from './lib/exceptions/APIException.ts';
 
@@ -15,7 +16,7 @@ async function verifySession(token: string, signal: AbortSignal) {
   } catch (error) {
     const apiError = error instanceof APIException ? error : undefined;
     const status = apiError?.httpStatusCode;
-    if (status === 401 || apiError?.compare(EX.API_TOKEN_EXPIRES)) {
+    if (status === 401) {
       throw new AppError(422, 'jimeng_session_rejected', 'Jimeng rejected the session');
     }
     if (status === 403 || apiError?.compare(EX.API_RISK_CONTROL_REJECTED)) {
@@ -36,21 +37,27 @@ async function verifySession(token: string, signal: AbortSignal) {
 
 export async function discoverJimeng(c, signal: AbortSignal) {
   await verifySession(c.token, signal);
-  const generation = (await withJimengRequest(signal, () => listModelConfigs(c.token))).map((m) => ({
-    id: m.id,
+  const generation = (await withJimengRequest(signal, () => listModelConfigs(c.token, true))).map((m) => ({
+    id: m.modelReqKey,
+    publicId: m.id,
     operation: m.type,
     capabilities: {
       resolutions: m.supportedResolutions,
-      durations: m.supportedDurations,
+      durations: m.type === 'video' ? getSupportedVideoDurations(m) : undefined,
       counts: m.supportedGenerateCounts,
     },
   }));
-  const recast = [...VIDEO_RECAST_MODELS].map(([id, model]) => ({
-    id,
+  const recast = {
+    id: videoRecastModel.upstreamModel,
+    publicId: videoRecastModel.id,
     operation: 'video',
-    capabilities: { mode: 'recast', resolutions: [model.resolution], durations: [model.sourceDurationMs / 1000] },
-  }));
-  return [...generation, ...recast];
+    capabilities: {
+      mode: 'recast',
+      resolutions: [videoRecastModel.resolution],
+      durations: [videoRecastModel.sourceDurationMs / 1000],
+    },
+  };
+  return [...generation, recast];
 }
 
 export function normalizeJimengCredential(c: CredentialInput) {

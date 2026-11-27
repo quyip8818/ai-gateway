@@ -90,7 +90,6 @@ test(
     assert.equal((await http('/')).status, 200);
     assert.equal((await http('/console.js')).status, 200);
     await json('/v1/models', undefined, undefined, 401);
-    await json('/openai/v1/models', undefined, undefined, 404);
     await json('/admin/v1/accounts', undefined, undefined, 401);
     await json('/admin/v1/providers/jimeng/settings', undefined, undefined, 401);
     await json('/admin/v1/media', undefined, undefined, 401);
@@ -237,11 +236,24 @@ test(
     ).token;
     const models = (await json('/v1/models', key)).data;
     assert.ok(models.length > 4);
+    for (const [id, operation] of [
+      ['seedream-5.0-lite', 'image'],
+      ['seedream-5.5', 'image'],
+      ['seedance-2.0', 'video'],
+      ['seedance-2.5-recast', 'video'],
+    ]) {
+      const model = models.find((item) => item.id === id);
+      assert.equal(model?.operation, operation);
+      assert.equal(model.owned_by, 'bytedance');
+      assert.ok(!('provider' in model));
+    }
+    assert.doesNotMatch(JSON.stringify(models), /jimeng|high_aes_general|dreamina|fixture_internal_image/);
+    const unnamedImages = models.filter(({ id }) => /^image-[a-f0-9]{16}$/.test(id));
+    assert.equal(unnamedImages.length, 2);
     assert.deepEqual(
       (await json('/v1/models', other)).data.map((m) => m.owned_by),
       ['claude'],
     );
-    await json('/admin/v1/workspaces', admin, undefined, 404);
     await json('/admin/v1/keys', admin, { label: 'invalid-product', providers: ['unknown'] }, 400);
     await json('/admin/v1/keys', admin, { label: 'no-products', providers: [] }, 400);
     const claude = {
@@ -367,6 +379,7 @@ test(
     assert.equal(image.resolution, '2k');
     assert.equal(image.data[0].width, 1);
     assert.equal(image.data[0].height, 1);
+    assert.equal(image.model, 'seedream-5.0-lite');
     assert.deepEqual(image.usage, { credits_used: 6 });
     const billingLines = server.output().split('\n');
     assert.equal(billingLines.filter((line) => line === '[fixture jimeng ledger request]').length, 1);
@@ -382,9 +395,11 @@ test(
     assert.deepEqual(JSON.parse(loggedReceipt.slice(receiptPrefix.length)), receipt);
     const edited = await json('/v1/images/edits', key, {
       prompt: 'fixture edit',
+      model: 'seedream-5.0-lite',
       images: [{ image_url: 'data:image/png;base64,iVBORw0KGgo=' }],
     });
     const download = await fetch(edited.data[0].url);
+    assert.equal(edited.model, 'seedream-5.0-lite');
     assert.deepEqual(edited.usage, { credits_used: null });
     assert.equal(download.status, 200);
     assert.deepEqual(Buffer.from(await download.arrayBuffer()), imageBytes);
@@ -402,6 +417,7 @@ test(
     assert.equal(multipartEdit.status, 200);
     const multipartImage = await multipartEdit.json();
     assert.equal(multipartImage.data[0].b64_json, image.data[0].b64_json);
+    assert.equal(multipartImage.model, 'seedream-5.0-lite');
     assert.deepEqual(multipartImage.usage, { credits_used: null });
     assert.equal(server.output().split('\n').filter((line) => line === '[fixture jimeng ledger request]').length, 3);
     const invalidURL = new URL(edited.data[0].url);
@@ -414,7 +430,7 @@ test(
     assert.equal(images.total_pages, 3);
     assert.equal(images.items.length, 1);
     assert.equal(images.items[0].provider, 'jimeng');
-    assert.equal(images.items[0].model, 'jimeng/jimeng-image-5.0-lite');
+    assert.equal(images.items[0].model, 'seedream-5.0-lite');
     assert.equal(images.items[0].type, 'image');
     assert.equal(images.items[0].bytes, imageBytes.length);
     const pageTwo = await json(mediaPage + '?type=image&page=2&limit=1', admin);
@@ -435,12 +451,15 @@ test(
       json('/v1/videos', key, body, 200, headers),
     ]);
     assert.equal(duplicate.id, first.id);
+    assert.equal(first.model, 'seedance-2.0');
     assert.equal(first.resolution, '720p');
     assert.equal(first.output, null);
     const recast = await json('/v1/videos/edits', key, {
       prompt: 'fixture recast',
-      video: { upstream_id: '11111111-1111-1111-1111-111111111111' },
+      video: { reference_id: '11111111-1111-1111-1111-111111111111' },
     });
+    assert.equal(recast.model, 'seedance-2.5-recast');
+    await json('/v1/videos', key, { ...body, model: 'seedance-2.5-recast' }, 400);
     await json('/v1/videos', key, { prompt: 'different' }, 409, headers);
     await json('/v1/videos', key, { prompt: 'bad reference', input_reference: {} }, 400);
     await json('/v1/videos/' + first.id, other, undefined, 404);
@@ -498,11 +517,27 @@ test(
     assert.equal((await waitForCompletedVideo(recast.id)).resolution, '480p');
     const videos = await json(mediaPage + '?type=video', admin);
     assert.equal(videos.total, 2);
+    assert.equal((await json(mediaPage + '?type=video&provider=jimeng', admin)).total, 2);
     assert.equal(videos.items.find(({ id }) => id === first.id.slice(6)).model, current.model);
     const videoHead = await http('/admin/v1/media/' + first.id.slice(6), admin, undefined, {}, 'HEAD');
     assert.equal(videoHead.status, 200);
     assert.equal(videoHead.headers.get('content-type'), 'video/mp4');
     assert.ok(Number(videoHead.headers.get('content-length')) > 0);
+    const seedream = await json('/v1/images/generations', key, {
+      model: 'seedream-5.5',
+      prompt: 'fixture seedream 5.5',
+      size: '1536x1024',
+      response_format: 'b64_json',
+    });
+    assert.equal(seedream.model, 'seedream-5.5');
+    assert.equal(seedream.resolution, '2k');
+    assert.equal(seedream.data[0].b64_json, image.data[0].b64_json);
+    const creditFallback = await json('/v1/images/generations', key, {
+      model: 'seedream-5.5',
+      prompt: 'fixture credit fallback',
+    });
+    assert.equal(creditFallback.resolution, '1k');
+    await json('/v1/images/generations', key, { model: 'jimeng/jimeng-image-5.0-lite', prompt: 'old ID' }, 404);
     const [jimengAccount] = await json('/admin/v1/accounts?provider=jimeng', admin);
     const accountPath = '/admin/v1/accounts/' + jimengAccount.id;
     await enableAccount(jimengAccount, false);
@@ -515,6 +550,11 @@ test(
     }, 409);
     await enableAccount(jimengAccount, true);
     assert.equal((await http(accountPath + '/reload', admin, undefined, {}, 'POST')).status, 204);
+    const fallback = await json('/v1/images/generations', key, {
+      prompt: 'fixture seedream 5.5',
+      size: '1536x1024',
+    });
+    assert.equal(fallback.model, 'seedream-5.5');
     const { rows: [pendingVideo] } = await db.query(
       `INSERT INTO ${schema}.video_jobs
         (id,owner_id,account_id,public_model,upstream_model,operation,input_hash,status,run_after)
@@ -551,7 +591,7 @@ test(
     assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
-    for (const version of [3, 4, 5, 6, 7, 8, 99]) {
+    for (const version of [9, 99]) {
       await db.query(`UPDATE ${schema}.gateway_schema SET version=$1`, [version]);
       server = start();
       const [exitCode] = await server.closed;

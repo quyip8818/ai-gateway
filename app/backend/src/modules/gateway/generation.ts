@@ -7,7 +7,7 @@ import { monitorSSE } from './sse.ts';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { AppError } from '../../domain.ts';
 import { imageDimensions, imageMime } from '../media/image-content.ts';
-import { invokeText, jimengImages, jimengMediaFiles, validateTextInput } from '../../providers/registry.ts';
+import { invokeText, jimengImages, jimengMediaFiles, preferredImageModels, validateTextInput } from '../../providers/registry.ts';
 
 type TextDelivery = { status: number; retryAfter: string | null } & (
   | { kind: 'stream'; body: Transform }
@@ -133,7 +133,7 @@ export function generation(
         throw new AppError(400, 'invalid_reference');
       }
     }
-    const model = input.model ?? 'jimeng/jimeng-image-5.0-lite';
+    const model = input.model ?? await accounts.defaultMediaModel(key, 'image', preferredImageModels);
     return attempt(key, model, 'image', async (account) => {
       const { account: current, credential } = await accounts.credentialSnapshot(account.id, signal);
       const { urls, resolution, usage } = await accounts.withProviderSettings(current, signal, () => jimengImages.generate(
@@ -148,12 +148,18 @@ export function generation(
           const mime = imageMime(bytes);
           if (!mime) throw new AppError(502, 'invalid_media_content');
           const dimensions = imageDimensions(bytes, mime);
-          const id = await media.save(key.id, model, mime, bytes);
+          const id = await media.save(key.id, account.provider, model, mime, bytes);
           const content = format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: media.signedUrl(id, origin) };
           data.push({ ...content, width: dimensions?.width ?? null, height: dimensions?.height ?? null });
         }
         const { credit_receipt } = await usage;
-        return { created: Math.floor(Date.now() / 1000), resolution, data, usage: { credits_used: credit_receipt.credits_used } };
+        return {
+          created: Math.floor(Date.now() / 1000),
+          model,
+          resolution,
+          data,
+          usage: { credits_used: credit_receipt.credits_used },
+        };
       }
 
       return { value: deliver(), usage };

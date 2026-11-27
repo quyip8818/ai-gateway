@@ -3,11 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Store } from '../../infrastructure/postgres/store.ts';
 import { AppError, isUUID } from '../../domain.ts';
 import type { Files } from '../../infrastructure/files/storage.ts';
-import { jimengVideos as provider, jimengMediaFiles } from '../../providers/registry.ts';
+import { jimengVideos as provider, jimengMediaFiles, preferredVideoModels } from '../../providers/registry.ts';
 
 export function publicVideo(job) {
   const resolution = job.operation === 'recast'
-    ? provider.recastSpec(job.upstream_model)?.resolution
+    ? provider.recast.resolution
     : job.size && provider.parseSize(job.size)?.resolution;
   return {
     id: 'video_' + job.id,
@@ -45,17 +45,21 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       throw new AppError(400, 'invalid_idempotency_key');
     if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 32_000)
       throw new AppError(400, 'invalid_prompt');
-    const publicModel =
-      body.model ??
-      'jimeng/' + (operation === 'recast' ? provider.defaultRecastModel : 'jimeng-video-seedance-2.0');
-    if (typeof publicModel !== 'string' || !publicModel.startsWith('jimeng/'))
+    const recast = operation === 'recast';
+    const requestedModel = body.model ?? null;
+    if (requestedModel !== null && (
+      typeof requestedModel !== 'string' || !requestedModel ||
+      (requestedModel === provider.recast.model) !== recast
+    ))
       throw new AppError(400, 'invalid_video_model');
-    const rawSource = operation === 'recast' ? body.video?.upstream_id : undefined;
-    if (rawSource !== undefined && (body.video?.id || typeof rawSource !== 'string' || !isUUID(rawSource))) {
+    const referenceId = recast ? body.video?.reference_id : undefined;
+    if (recast && (referenceId === undefined
+      ? typeof body.video?.id !== 'string'
+      : body.video?.id !== undefined || typeof referenceId !== 'string' || !isUUID(referenceId))) {
       throw new AppError(400, 'invalid_recast_source');
     }
-    const source = operation === 'recast' && !rawSource ? await get(key, body.video?.id ?? '') : null;
-    const sourceId = source?.id ?? rawSource;
+    const source = recast && referenceId === undefined ? await get(key, body.video.id) : null;
+    const sourceId = source?.id ?? referenceId;
     const requestedSeconds = body.seconds === undefined ? undefined : Number(body.seconds);
     const desiredSize = body.size === undefined ? undefined : provider.parseSize(body.size);
     const url = body.input_reference?.image_url;
@@ -63,7 +67,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       throw new AppError(400, 'invalid_reference');
     }
     const hash = createHash('sha256')
-      .update(JSON.stringify([publicModel, body.prompt, body.size, requestedSeconds, url, sourceId]))
+      .update(JSON.stringify([requestedModel, body.prompt, body.size, requestedSeconds, url, source?.id, referenceId]))
       .digest();
     const lookup = async () => {
       if (!idempotency) return;
@@ -80,8 +84,9 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       throw new AppError(400, 'invalid_video_dimensions');
     }
     if (source && source.status !== 'completed') throw new AppError(409, 'source_not_ready');
-    const recast = provider.recastSpec(publicModel.slice(7));
-    if (Boolean(recast) !== (operation === 'recast')) throw new AppError(400, 'invalid_video_model');
+    const publicModel = requestedModel ?? (recast
+      ? provider.recast.model
+      : await accounts.defaultMediaModel(key, 'video', preferredVideoModels));
     const target = await accounts.select(key, publicModel, 'video', source?.account_id ?? null, false);
     let resolution, ratio, seconds, size;
     if (!recast) {
@@ -101,7 +106,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       }
       size = body.size ?? provider.size(16, 9, resolution === '4k' ? 2160 : Number.parseInt(resolution));
     } else {
-      seconds = recast.seconds;
+      seconds = provider.recast.seconds;
     }
     let reference;
     if (url !== undefined) {
@@ -170,7 +175,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
       });
       if (!state) return;
       if (state.state === 'failed') {
-        await update('failed', 0, null, 'upstream_video_failed');
+        await update('failed', 0, null, 'video_generation_failed');
         return;
       }
       if (state.state === 'ready') {
@@ -180,7 +185,7 @@ export function createVideoService(store: VideoRepository, accounts: Accounts, f
           AbortSignal.any([signal, AbortSignal.timeout(40_000)]),
         );
         if (bytes.toString('ascii', 4, 8) !== 'ftyp') throw new Error('Unexpected video content');
-        await store.completeVideo(job, bytes.length, state.output, () => files.write(job.id, bytes));
+        await store.completeVideo(job, account.provider, bytes.length, state.output, () => files.write(job.id, bytes));
         return;
       }
       await update(

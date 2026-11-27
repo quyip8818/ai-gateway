@@ -5,12 +5,12 @@ import { AppError, type Provider } from '../../domain.ts';
 import type { createAccountFingerprints } from './account-fingerprints.ts';
 import { failPendingVideos, hasPendingVideos } from './videos.ts';
 
-export async function insertAccountModels(client: pg.PoolClient, id: string, provider: Provider, models: DiscoveredModel[]) {
+export async function insertAccountModels(client: pg.PoolClient, id: string, models: DiscoveredModel[]) {
   for (const model of models) {
     await client.query(
       `INSERT INTO account_models(account_id,public_id,upstream_id,operation,capabilities)
        VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [id, provider + '/' + model.id, model.id, model.operation, model.capabilities],
+      [id, model.publicId, model.upstreamId, model.operation, model.capabilities],
     );
   }
 }
@@ -49,7 +49,7 @@ export function createAccountMaintenance(
       }
 
       await client.query('DELETE FROM account_models WHERE account_id=$1', [account.id]);
-      await insertAccountModels(client, account.id, account.provider, models);
+      await insertAccountModels(client, account.id, models);
     });
   }
 

@@ -75,12 +75,16 @@ export async function* invoke(body: string, token: string, region: string, oidc:
 
   const decoder = new EventStreamDecoder();
   const reader = response.body.getReader();
+  const cancel = () => void reader.cancel().catch(() => {});
+  signal?.addEventListener("abort", cancel, { once: true });
   let drained = false;
   let terminalEvent = false;
 
   try {
+    signal?.throwIfAborted();
     while (true) {
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
       if (done) {
         drained = true;
         break;
@@ -99,12 +103,14 @@ export async function* invoke(body: string, token: string, region: string, oidc:
         }
 
         const event = toEvent(eventType, parseJson(frame.payload));
-        if (event.type === "metering" || event.type === "metadata" && event.data.stopReason) terminalEvent = true;
+        if (event.type === "metering" ||
+            event.type === "metadata" && (event.data.stopReason || event.data.stopDetails?.refusal)) terminalEvent = true;
         yield event;
       }
     }
     if (!terminalEvent || decoder.pending > 0) throw new KiroApiError("Truncated Kiro event stream", 502, "");
   } finally {
+    signal?.removeEventListener("abort", cancel);
     reader.releaseLock();
     // releaseLock alone leaves the body live — it keeps streaming from the
     // socket. Any early exit (a thrown frame, a client disconnect running the

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
-import { VIDEO_RECAST_MODELS } from './video-recast-models.ts';
+import { videoRecastModel } from './video-recast-models.ts';
 
 type VideoOperation = 'generate' | 'recast' | 'upscale';
 
@@ -11,12 +11,10 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function loadVideoModelOperations(file?: string) {
     const models = new Map<string, VideoOperation>([
         ['dreamina_wan_30_recast', 'recast'],
+        [videoRecastModel.id, 'recast'],
+        [videoRecastModel.upstreamModel, 'recast'],
         ['video_upscale_paz', 'upscale'],
     ]);
-    for (const [id, profile] of VIDEO_RECAST_MODELS) {
-        models.set(id, 'recast');
-        models.set(profile.upstreamModel, 'recast');
-    }
     if (!file) return models;
 
     const document: unknown = parse(readFileSync(file, 'utf8'));

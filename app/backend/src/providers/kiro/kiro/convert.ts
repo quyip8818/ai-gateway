@@ -1,6 +1,5 @@
 import type { AnthropicContentBlock, AnthropicMessage, AnthropicSystem, AnthropicTool } from "../anthropic/type.ts";
 import { MAX_TOOL_DESCRIPTION, MAX_TOOL_NAME } from "../core/config.ts";
-import { THINKING_CLOSE, THINKING_OPEN } from "./thinking.ts";
 import type { KiroImage, KiroToolResult, KiroToolSpec, KiroToolUse } from "./type.ts";
 
 /**
@@ -13,19 +12,12 @@ import type { KiroImage, KiroToolResult, KiroToolSpec, KiroToolUse } from "./typ
  * enforced here rather than discovered at runtime.
  */
 
-export const textOf = (content: string | AnthropicContentBlock[] | undefined, keepThinking = true): string => {
+export const textOf = (content: string | AnthropicContentBlock[] | undefined): string => {
   if (content === undefined) return "";
   if (typeof content === "string") return content;
   const parts: string[] = [];
   for (const block of content) {
     if (block.type === "text") parts.push(block.text);
-    // Replayed reasoning is marked as reasoning. Kiro has no thinking blocks, so
-    // it can only come back as text, and unmarked it read as something the
-    // model had said out loud. The tags are the ones it was asked to write in
-    // the first place (kiro/thinking.ts), so this is the same shape either way.
-    else if (keepThinking && block.type === "thinking" && block.thinking) {
-      parts.push(`${THINKING_OPEN}${block.thinking}${THINKING_CLOSE}`);
-    }
   }
   return parts.join("\n");
 };
@@ -174,13 +166,12 @@ const hasPayload = (msg: NormalMessage): boolean =>
 export const normalizeMessages = (
   messages: AnthropicMessage[],
   keepTools: boolean,
-  keepThinking = true,
 ): NormalMessage[] => {
   const flat: NormalMessage[] = messages.map((msg) => ({
     // Kiro only understands user/assistant; anything else (e.g. "developer")
     // becomes a user turn rather than being dropped.
     role: msg.role === "assistant" ? "assistant" : "user",
-    text: textOf(msg.content, keepThinking),
+    text: textOf(msg.content),
     images: imagesOf(msg.content),
     toolUses: keepTools ? toolUsesOf(msg.content) : [],
     toolResults: keepTools ? toolResultsOf(msg.content) : [],

@@ -1,10 +1,7 @@
 import { PING_INTERVAL_MS } from "../core/config.ts";
-import { log } from "../core/log.ts";
 import { KiroApiError } from "../kiro/client.ts";
-import { refusalOf } from "../kiro/refusal.ts";
-import { type ThinkingPiece, ThinkingSplitter } from "../kiro/thinking.ts";
 import type { KiroEvent } from "../kiro/type.ts";
-import { estimateTokens, mapStopReason, messageId, promptFromContext, usageOf } from "./response.ts";
+import { estimateUsage, mapStopReason, messageId } from "./response.ts";
 
 /**
  * Anthropic SSE streaming.
@@ -18,10 +15,7 @@ import { estimateTokens, mapStopReason, messageId, promptFromContext, usageOf } 
  * Kiro interleaves text and tool events freely, so an open block is closed
  * before a different block opens; indices stay monotonic.
  *
- * With thinking on, one more thing splits: the model writes its reasoning
- * between tags inside the same text stream, and it becomes thinking blocks here
- * (kiro/thinking.ts). Nothing about the ordering changes - a thinking block is
- * just another block, opened and closed like the rest.
+ * Native reasoning events use their own thinking blocks.
  */
 
 const encoder = new TextEncoder();
@@ -39,10 +33,10 @@ export const streamResponse = (
   events: AsyncIterable<KiroEvent>,
   model: string,
   promptToken: number,
-  signal: AbortSignal,
-  splitThinking = false,
+  abortUpstream: () => void,
 ): Response => {
   const id = messageId();
+  let cancelled = false;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -50,19 +44,13 @@ export const streamResponse = (
       // already forwarded to the client as input_json_delta and never re-read
       // here, so accumulating it would just hold large strings for nothing.
       const toolIds = new Set<string>();
-      const splitter = splitThinking ? new ThinkingSplitter() : null;
       let open: OpenBlock;
       let nextIndex = 0;
-      let outputText = "";
+      let textChars = 0;
       let stopReason: string | undefined;
-      let sawToolUse = false;
-      const startedAt = performance.now();
-      let firstTextAt = 0;
-      let chunkCount = 0;
       let thoughtChars = 0;
-      let contextPercent = 0;
-      let credits = 0;
-      let refusal: string | undefined;
+      let contextPercent: number | undefined;
+      let refused = false;
 
       const closeOpen = (): void => {
         if (!open) return;
@@ -70,20 +58,8 @@ export const streamResponse = (
         open = undefined;
       };
 
-      /*
-       * Keep the connection audibly alive while Kiro thinks.
-       *
-       * Silence and death look identical to anything watching the socket, and
-       * Kiro is legitimately silent for tens of seconds before a tool call on a
-       * long conversation. ara's device relay ends a request after 30s without
-       * an event, which is how this turned into "device response timed out"
-       * mid-answer. The interval is cleared before the stream closes, so a ping
-       * can never be queued onto a closed controller.
-       */
-      let alive = true;
       const heartbeat = setInterval(() => {
-        if (!alive) return;
-        controller.enqueue(sse("ping", { type: "ping" }));
+        if (!cancelled) controller.enqueue(sse("ping", { type: "ping" }));
       }, PING_INTERVAL_MS);
 
       const startBlock = (kind: "text" | "thinking"): { kind: "text" | "thinking"; index: number } => {
@@ -100,27 +76,19 @@ export const streamResponse = (
         return block;
       };
 
-      /** Write reasoning and answer pieces out as their own blocks. */
-      const writePieces = (pieceList: ThinkingPiece[]): void => {
-        for (const piece of pieceList) {
-          const current = open;
-          const block = current && current.kind === piece.kind ? current : startBlock(piece.kind);
-          if (piece.kind === "thinking") {
-            thoughtChars += piece.text.length;
-          } else {
-            outputText += piece.text;
-          }
-          controller.enqueue(
-            sse("content_block_delta", {
-              type: "content_block_delta",
-              index: block.index,
-              delta:
-                piece.kind === "thinking"
-                  ? { type: "thinking_delta", thinking: piece.text }
-                  : { type: "text_delta", text: piece.text },
-            }),
-          );
-        }
+      const writeContent = (kind: "text" | "thinking", text: string): void => {
+        const block = open?.kind === kind ? open : startBlock(kind);
+        if (kind === "thinking") thoughtChars += text.length;
+        else textChars += text.length;
+        controller.enqueue(
+          sse("content_block_delta", {
+            type: "content_block_delta",
+            index: block.index,
+            delta: kind === "thinking"
+              ? { type: "thinking_delta", thinking: text }
+              : { type: "text_delta", text },
+          }),
+        );
       };
 
       try {
@@ -142,21 +110,18 @@ export const streamResponse = (
         controller.enqueue(sse("ping", { type: "ping" }));
 
         for await (const event of events) {
-          if (signal.aborted) break;
+          if (cancelled) return;
 
           if (event.type === "assistantResponse") {
             const chunk = event.data.content ?? "";
             if (!chunk) continue;
-            if (!firstTextAt) firstTextAt = performance.now();
-            chunkCount++;
-            writePieces(splitter ? splitter.push(chunk) : [{ kind: "text", text: chunk }]);
+            writeContent("text", chunk);
             continue;
           }
 
           if (event.type === "reasoning") {
             const { text, signature } = event.data;
-            if (!firstTextAt) firstTextAt = performance.now();
-            if (text) writePieces([{ kind: "thinking", text }]);
+            if (text) writeContent("thinking", text);
             // The signature closes the block it belongs to. A model that chose
             // not to think sends one with no text; there is no block to sign.
             if (signature && open?.kind === "thinking") {
@@ -167,17 +132,13 @@ export const streamResponse = (
                   delta: { type: "signature_delta", signature },
                 }),
               );
+              closeOpen();
             }
             continue;
           }
 
           if (event.type === "toolUse") {
             const { toolUseId, name, input, stop } = event.data;
-            sawToolUse = true;
-
-            // Reasoning left open when the model turns to a tool call ends here:
-            // it did end, it just ended without saying so.
-            if (splitter) writePieces(splitter.end());
 
             if (!(open?.kind === "tool" && open.id === toolUseId)) {
               closeOpen();
@@ -210,51 +171,35 @@ export const streamResponse = (
             continue;
           }
 
-          if (event.type === "metering") {
-            credits += event.data.usage ?? 0;
-            continue;
-          }
-
-          if (event.type === "metadata") refusal = refusalOf(event.data) ?? refusal;
-
-          if (event.type === "metadata" && event.data.stopReason) {
-            stopReason = event.data.stopReason;
+          if (event.type === "metadata") {
+            stopReason = event.data.stopReason ?? stopReason;
+            refused ||= Boolean(event.data.stopDetails?.refusal);
           }
         }
 
-        if (splitter) writePieces(splitter.end());
+        if (cancelled) return;
         closeOpen();
 
-        // A refusal ends the stream like any answer, just with nothing in it.
-        // Passed on as-is it reads as "the model returned no content" and
-        // hides the reason, so it becomes an error that says what happened.
-        if (!outputText && !thoughtChars && !sawToolUse) {
-          if (refusal) throw new Error(refusal);
+        if (refused && !textChars && !thoughtChars && !toolIds.size) {
+          controller.enqueue(sse("error", {
+            type: "error",
+            error: { type: "invalid_request_error", code: "request_refused", message: "request_refused" },
+          }));
+          return;
         }
 
-        const outputTokens = estimateTokens(outputText) + Math.ceil(thoughtChars / 4) + toolIds.size * 8;
-        // Prefer the upstream context measurement when available.
-        const usage = usageOf(
-          promptFromContext(contextPercent, outputTokens) ?? promptToken,
-          outputTokens,
-        );
+        const usage = estimateUsage(promptToken, textChars, thoughtChars, toolIds.size, contextPercent);
         controller.enqueue(
           sse("message_delta", {
             type: "message_delta",
-            delta: { stop_reason: mapStopReason(stopReason, sawToolUse), stop_sequence: null },
+            delta: { stop_reason: mapStopReason(stopReason, toolIds.size > 0), stop_sequence: null },
             usage,
           }),
         );
         controller.enqueue(sse("message_stop", { type: "message_stop" }));
-        log.info(
-          `stream completed model=${model} ttfb=${Math.round(firstTextAt ? firstTextAt - startedAt : -1)}ms ` +
-            `total=${Math.round(performance.now() - startedAt)}ms chunks=${chunkCount} thought=${thoughtChars} ` +
-            `credits=${credits.toFixed(4)} prompt=${usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)} ` +
-            `read=${usage.cache_read_input_tokens ?? 0} write=${usage.cache_creation_input_tokens ?? 0}`,
-        );
       } catch (error) {
+        if (cancelled) return;
         const message = "Kiro upstream stream failed";
-        log.error(`stream failed: ${message}`);
         // The HTTP status is already 200 by this point, so the failure has to be
         // reported inside the stream where the client will actually see it.
         controller.enqueue(
@@ -269,10 +214,13 @@ export const streamResponse = (
           }),
         );
       } finally {
-        alive = false;
         clearInterval(heartbeat);
-        controller.close();
+        if (!cancelled) controller.close();
       }
+    },
+    cancel() {
+      cancelled = true;
+      abortUpstream();
     },
   });
 
