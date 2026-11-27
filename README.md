@@ -4,12 +4,12 @@
 
 ## 启动
 
-1. 用 `deploy/.env.example` 准备 `deploy/.env`，设置随机的 `POSTGRES_PASSWORD`、`GATEWAY_SECRET` 和 `ADMIN_TOKEN`。
+1. 用 `deploy/.env.example` 准备 `deploy/.env`，设置 `POSTGRES_PASSWORD`、`GATEWAY_SECRET`、`ADMIN_USERNAME` 和 `ADMIN_PASSWORD`。
 2. 运行 `npm run deploy`，访问 `http://localhost:8088`。Compose 创建独立的 PostgreSQL 库和媒体卷。
-3. 用管理员 token 进入控制台，添加上游账号。账号验证后自动建立账号池和模型目录。
+3. 用管理员用户名和密码进入控制台，添加上游账号。账号验证后自动建立账号池和模型目录。
 4. 在 **Keys** 选择池并签发调用 Key。用 `GET /v1/models` 查询该 Key 能访问的模型 ID。
 
-本地开发可使用 Docker 中独立运行的 PostgreSQL 数据库。参考根目录 `.env.example` 配置连接、加密密钥和管理员 token，执行 `npm ci --prefix native` 后运行 `pnpm start`。启动命令会重建前端和后端，本地使用固定端口 41873，启动后会打印控制台 URL。
+本地开发可使用 Docker 中独立运行的 PostgreSQL 数据库。参考根目录 `.env.example` 配置连接、加密密钥和管理员用户名和密码，执行 `npm ci --prefix native` 后运行 `pnpm start`。启动命令会重建前端和后端，本地使用固定端口 41873，启动后会打印控制台 URL。
 
 ## 账号和入口
 

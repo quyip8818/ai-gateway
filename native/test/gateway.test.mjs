@@ -20,17 +20,19 @@ test(
     await db.query(`CREATE SCHEMA ${schema}`);
     const url = new URL(process.env.TEST_DATABASE_URL);
     url.searchParams.set('options', '-c search_path=' + schema);
-    const bootstrap = 'test-only-admin-token-for-gateway';
+    const username = 'test-admin';
+    const password = 'test-only-password-for-gateway';
     const port = Number(process.env.TEST_GATEWAY_PORT ?? 55472);
     const cancellation = join(directory, 'cancellation.txt');
     const submissions = join(directory, 'submissions.txt');
     const refreshes = join(directory, 'refreshes.txt');
-    function start() {
+    function start(adminPassword = password) {
       const child = spawn(process.execPath, ['--import', './test/upstream-fixture.mjs', 'dist/server.js'], {
         env: {
           ...process.env,
           DATABASE_URL: url.href,
-          ADMIN_TOKEN: bootstrap,
+          ADMIN_USERNAME: username,
+          ADMIN_PASSWORD: adminPassword,
           GATEWAY_SECRET: 'test-only-gateway-encryption-secret',
           HOST: '127.0.0.1',
           PORT: String(port),
@@ -72,7 +74,7 @@ test(
       fetch(base + path, {
         method,
         headers: {
-          ...(token ? { authorization: 'Bearer ' + token } : {}),
+          ...(token?.startsWith('gateway_session=') ? { cookie: token } : token ? { authorization: 'Bearer ' + token } : {}),
           ...(body === undefined ? {} : { 'content-type': 'application/json' }),
           ...extra,
         },
@@ -89,10 +91,15 @@ test(
     await json('/v1/models', undefined, undefined, 401);
     await json('/openai/v1/models', undefined, undefined, 404);
     await json('/admin/v1/accounts', undefined, undefined, 401);
-    const session = await http('/admin/v1/session', bootstrap, undefined, {}, 'POST');
-    assert.equal(session.status, 200);
-    const admin = (await session.json()).token;
-    assert.match(admin, /^adm_/);
+    await json('/admin/v1/session', undefined, { username, password: 'wrong-password' }, 401);
+    await json('/admin/v1/session', undefined, { username, password }, 403, { origin: 'https://foreign.example' });
+    const session = await http('/admin/v1/session', undefined, { username, password });
+    assert.equal(session.status, 204);
+    const cookie = session.headers.get('set-cookie');
+    assert.match(cookie, /HttpOnly; SameSite=Strict/);
+    const admin = cookie.split(';')[0];
+    assert.equal((await http('/admin/v1/session', admin)).status, 204);
+    await json('/admin/v1/accounts', admin.split('=')[1], undefined, 401);
     for (const entry of [
       ['jimeng', 'cookie', 'sessionid=test-jimeng-token'],
       ['codex', 'oauth', { accessToken: 'test-codex-token', accountId: 'fixture' }],
@@ -161,14 +168,8 @@ test(
       (await json('/v1/models', other)).data.map((m) => m.owned_by),
       ['claude'],
     );
-    const isolated = await json('/admin/v1/workspaces', admin, { name: 'Isolated' });
-    await json('/admin/v1/keys', admin, { label: 'cross-space', pools: [pools[0].id] }, 400, {
-      'x-workspace-id': isolated.id,
-    });
-    assert.deepEqual(
-      await json('/admin/v1/accounts', admin, undefined, 200, { 'x-workspace-id': isolated.id }),
-      [],
-    );
+    await json('/admin/v1/workspaces', admin, undefined, 404);
+    await json('/admin/v1/keys', admin, { label: 'invalid-pool', pools: ['11111111-1111-1111-1111-111111111111'] }, 400);
     const claude = {
       model: 'claude/claude-fixture',
       messages: [{ role: 'user', content: 'hello' }],
@@ -338,6 +339,15 @@ test(
     assert.equal((await json('/v1/videos/' + recast.id, key)).status, 'completed');
     assert.equal((await http('/admin/v1/session', admin, undefined, {}, 'DELETE')).status, 204);
     await json('/admin/v1/accounts', admin, undefined, 401);
+    const beforePasswordChange = await http('/admin/v1/session', undefined, { username, password });
+    assert.equal(beforePasswordChange.status, 204);
+    const oldCookie = beforePasswordChange.headers.get('set-cookie').split(';')[0];
+    server.child.kill('SIGTERM');
+    await server.closed;
+    server = start('changed-test-password-for-gateway');
+    await waitReady();
+    assert.equal((await http('/admin/v1/session', oldCookie)).status, 401);
+    assert.equal((await http('/admin/v1/session', undefined, { username, password })).status, 401);
     server.child.kill('SIGTERM');
     await server.closed;
     await db.query(`UPDATE ${schema}.gateway_schema SET version=99`);

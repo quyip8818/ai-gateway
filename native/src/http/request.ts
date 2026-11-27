@@ -40,12 +40,12 @@ export async function uploads(ctx, names: string[]) {
   return references;
 }
 
-export async function fetchAsset(store: Store, files: Files, ctx, key) {
+export async function fetchAsset(store: Store, files: Files, ctx, ownerId: string | null) {
   if (!isUUID(ctx.params.id)) throw new AppError(404, 'media_not_found');
   const asset = (
     await store.db.query(
-      'SELECT id,mime,bytes FROM media_assets WHERE id=$1 AND ($2::uuid IS NULL OR workspace_id=$2) AND ($3::uuid IS NULL OR owner_id=$3)',
-      [ctx.params.id, key?.workspace_id ?? null, key?.id ?? null],
+      'SELECT id,mime,bytes FROM media_assets WHERE id=$1 AND ($2::uuid IS NULL OR owner_id=$2)',
+      [ctx.params.id, ownerId],
     )
   ).rows[0];
   if (!asset) throw new AppError(404, 'media_not_found');

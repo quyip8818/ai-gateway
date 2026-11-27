@@ -94,6 +94,6 @@ export function registerAPI(
     if (isUUID(ctx.params.id) && store.verifyMedia(ctx.params.id, ctx.query.expires, ctx.query.signature)) {
       return fetchAsset(store, files, ctx, null);
     }
-    return fetchAsset(store, files, ctx, await caller(ctx));
+    return fetchAsset(store, files, ctx, (await caller(ctx)).id);
   });
 }

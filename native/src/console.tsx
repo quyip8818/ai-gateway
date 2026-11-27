@@ -1,57 +1,73 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
-const providerKinds = {
-  jimeng: ['cookie'],
-  codex: ['oauth', 'api-key'],
-  kiro: ['desktop', 'oidc'],
-  claude: ['api-key'],
-};
-const navigation = ['Accounts', 'Keys', 'Models', 'Requests', 'Media'];
+import { credentialKinds, type Provider } from './domain.ts';
+
+import { navigation, labels, cellText, columns, errorMessages } from './console-labels.ts';
+
 type Row = Record<string, any>;
 
 function Console() {
-  const [token, setToken] = useState('');
-  const [session, setSession] = useState('');
-  const [page, setPage] = useState('Accounts');
+  const [signedIn, setSignedIn] = useState<boolean | null>(null);
+  const [page, setPage] = useState<keyof typeof navigation>('Accounts');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
-  const [provider, setProvider] = useState('jimeng');
+  const [provider, setProvider] = useState<Provider>('jimeng');
   const [kind, setKind] = useState('cookie');
   const [rows, setRows] = useState<Record<string, Row[]>>({});
   const [key, setKey] = useState('');
   const [authURL, setAuthURL] = useState('');
-  const [space, setSpace] = useState('');
   const [revision, setRevision] = useState(0);
 
-  async function api(path: string, method = 'GET', body?: unknown) {
-    const headers: Record<string, string> = { authorization: 'Bearer ' + session };
-    if (space) headers['x-workspace-id'] = space;
+  async function api(path: string, method = 'GET', body?: unknown, signal?: AbortSignal) {
+    const headers: Record<string, string> = {};
     if (body !== undefined) headers['content-type'] = 'application/json';
     const response = await fetch('/admin/v1/' + path, {
       method,
+      signal,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    signal?.throwIfAborted();
+    if (response.status === 401) {
+      setSignedIn(false);
+      setRows({});
+      setKey('');
+      setAuthURL('');
+    }
     const value = response.status === 204 ? null : await response.json();
-    if (!response.ok) throw new Error(value?.error?.message ?? 'Request failed');
+    if (!response.ok) {
+      throw new Error(errorMessages[value?.error?.code] ?? `请求失败（HTTP ${response.status}）`);
+    }
     return value;
   }
   useEffect(() => {
-    if (!session) return;
-    let active = true;
-    const endpoints = ['accounts', 'pools', 'keys', 'models', 'requests', 'media', 'videos', 'workspaces'];
-    Promise.all(endpoints.map(async (path) => [path, await api(path)]))
+    const check = new AbortController();
+    void fetch('/admin/v1/session', { signal: check.signal })
+      .then((response) => {
+        if (!check.signal.aborted) setSignedIn(response.ok);
+      })
+      .catch(() => {
+        if (!check.signal.aborted) setSignedIn(false);
+      });
+    return () => check.abort();
+  }, []);
+
+  useEffect(() => {
+    if (!signedIn) return;
+    const load = new AbortController();
+    const endpoints = ['accounts', 'pools', 'keys', 'models', 'requests', 'media', 'videos'];
+    Promise.all(endpoints.map(async (path) => [path, await api(path, 'GET', undefined, load.signal)]))
       .then((result) => {
-        if (active) setRows(Object.fromEntries(result));
+        if (!load.signal.aborted) setRows(Object.fromEntries(result));
       })
       .catch((error) => {
-        if (active) setNotice(error.message);
+        if (!load.signal.aborted) setNotice(error.message);
       });
     return () => {
-      active = false;
+      load.abort();
     };
-  }, [session, space, revision]);
+  }, [signedIn, revision]);
 
   async function act(run: () => Promise<unknown>, success?: string) {
     setBusy(true);
@@ -61,44 +77,13 @@ function Console() {
       setRevision((v) => v + 1);
       if (success) setNotice(success);
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Request failed');
+      setNotice(error instanceof Error ? error.message : '请求失败');
     } finally {
       setBusy(false);
     }
   }
-  const columns = {
-    Accounts: [
-      ['label', 'Account'],
-      ['provider', 'Provider'],
-      ['kind', 'Authorization'],
-      ['concurrency', 'Capacity'],
-      ['enabled', 'Status'],
-    ],
-    Keys: [
-      ['label', 'Key'],
-      ['prefix', 'Prefix'],
-      ['created_at', 'Created'],
-      ['revoked_at', 'Revoked'],
-    ],
-    Models: [
-      ['id', 'Model'],
-      ['operation', 'Operation'],
-    ],
-    Requests: [
-      ['model', 'Model'],
-      ['operation', 'Operation'],
-      ['status', 'Status'],
-      ['created_at', 'Started'],
-    ],
-    Media: [
-      ['id', 'Asset'],
-      ['mime', 'Format'],
-      ['bytes', 'Bytes'],
-      ['created_at', 'Created'],
-    ],
-  };
   const tabRows = rows[page.toLowerCase()] ?? [];
-  if (!session)
+  if (!signedIn)
     return (
       <main className="login">
         <div className="brand">
@@ -107,28 +92,28 @@ function Console() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            const form = new FormData(e.currentTarget);
             void act(async () => {
-              const response = await fetch('/admin/v1/session', {
-                method: 'POST',
-                headers: { authorization: 'Bearer ' + token },
-              });
-              if (!response.ok) throw new Error('Admin token was not accepted');
-              setSession((await response.json()).token);
-              setToken('');
+              await api('session', 'POST', { username: form.get('username'), password: form.get('password') });
+              setSignedIn(true);
             });
           }}
         >
-          <h1>Gateway console</h1>
+          <h1>网关控制台</h1>
           <label>
-            Admin token
-            <input type="password" value={token} required onChange={(e) => setToken(e.target.value)} />
+            用户名
+            <input name="username" autoComplete="username" required maxLength={128} />
+          </label>
+          <label>
+            密码
+            <input name="password" type="password" autoComplete="current-password" required maxLength={1024} />
           </label>
           {notice && (
             <p className="feedback" role="status">
               {notice}
             </p>
           )}
-          <button disabled={busy}>Open console</button>
+          <button disabled={busy || signedIn === null}>登录</button>
         </form>
       </main>
     );
@@ -140,7 +125,7 @@ function Console() {
           <span>AG</span> ai-gateway
         </div>
         <nav>
-          {navigation.map((item) => (
+          {(Object.entries(navigation) as [keyof typeof navigation, string][]).map(([item, title]) => (
             <button
               className={page === item ? 'selected' : ''}
               key={item}
@@ -149,40 +134,32 @@ function Console() {
                 setNotice('');
               }}
             >
-              {item}
+              {title}
             </button>
           ))}
         </nav>
         <button
           className="quiet"
+          disabled={busy}
           onClick={() => {
-            void api('session', 'DELETE').catch(() => {});
-            setSession('');
-            setRows({});
-            setKey('');
-            setAuthURL('');
-            setNotice('');
+            void act(async () => {
+              await api('session', 'DELETE');
+              setSignedIn(false);
+              setRows({});
+              setKey('');
+              setAuthURL('');
+            });
           }}
         >
-          Sign out
+          退出登录
         </button>
       </aside>
       <main>
         <header>
-          <h1>{page}</h1>
+          <h1>{navigation[page]}</h1>
           <div className="actions">
-            <select aria-label="Workspace" value={space} onChange={(e) => setSpace(e.target.value)}>
-              <option value="">Default workspace</option>
-              {(rows.workspaces ?? [])
-                .filter((row) => row.name !== 'Default')
-                .map((row) => (
-                  <option key={row.id} value={row.id}>
-                    {row.name}
-                  </option>
-                ))}
-            </select>
             <button className="quiet" onClick={() => setRevision((v) => v + 1)}>
-              Refresh
+              刷新
             </button>
           </div>
         </header>
@@ -193,7 +170,7 @@ function Console() {
         )}
         {page === 'Accounts' && (
           <section>
-            <h2>Add account</h2>
+            <h2>添加账号</h2>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -201,7 +178,14 @@ function Console() {
                 const data = new FormData(form);
                 void act(async () => {
                   const input = String(data.get('credential') ?? '').trim();
-                  const credential = input.startsWith('{') ? JSON.parse(input) : input;
+                  let credential: unknown = input;
+                  if (input.startsWith('{')) {
+                    try {
+                      credential = JSON.parse(input);
+                    } catch {
+                      throw new Error('账号凭证的 JSON 格式有误');
+                    }
+                  }
                   await api('accounts', 'POST', {
                     provider,
                     kind,
@@ -211,50 +195,51 @@ function Console() {
                     concurrency: Number(data.get('concurrency')),
                   });
                   form.reset();
-                }, 'Account added');
+                }, '账号已添加');
               }}
             >
               <div className="fields">
                 <label>
-                  Provider
+                  供应商
                   <select
                     value={provider}
                     onChange={(e) => {
-                      setProvider(e.target.value);
-                      setKind(providerKinds[e.target.value][0]);
+                      const selected = e.target.value as Provider;
+                      setProvider(selected);
+                      setKind(credentialKinds[selected][0]);
                     }}
                   >
-                    {Object.keys(providerKinds).map((p) => (
-                      <option key={p}>{p}</option>
+                    {Object.keys(credentialKinds).map((p) => (
+                      <option key={p} value={p}>{labels[p] ?? p}</option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  Authorization
+                  授权方式
                   <select value={kind} onChange={(e) => setKind(e.target.value)}>
-                    {providerKinds[provider].map((k) => (
-                      <option key={k}>{k}</option>
+                    {credentialKinds[provider].map((k) => (
+                      <option key={k} value={k}>{labels[k] ?? k}</option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  Account name
+                  账号名称
                   <input name="label" required maxLength={100} />
                 </label>
                 <label>
-                  Account pool
-                  <input name="pool" placeholder="Default" />
+                  账号池
+                  <input name="pool" placeholder="默认" />
                 </label>
                 <label>
-                  Concurrency
+                  并发数
                   <input name="concurrency" defaultValue={1} type="number" min={1} max={100} />
                 </label>
               </div>
               <label>
-                Credential
+                账号凭证
                 <textarea name="credential" required autoComplete="off" spellCheck={false} />
               </label>
-              <button disabled={busy}>Validate and add</button>
+              <button disabled={busy}>验证并添加</button>
             </form>
             {provider === 'codex' && (
               <form
@@ -273,31 +258,31 @@ function Console() {
                   });
                 }}
               >
-                <h3>Codex browser authorization</h3>
+                <h3>Codex 浏览器授权</h3>
                 {authURL ? (
                   <>
                     <a href={authURL} target="_blank" rel="noreferrer">
-                      Open authorization
+                      打开授权页面
                     </a>
                     <label>
-                      Callback URL
+                      回调地址
                       <input name="callback" required />
                     </label>
                   </>
                 ) : (
                   <label>
-                    Account name
+                    账号名称
                     <input name="label" required />
                   </label>
                 )}
-                <button disabled={busy}>{authURL ? 'Complete authorization' : 'Create authorization link'}</button>
+                <button disabled={busy}>{authURL ? '完成授权' : '创建授权链接'}</button>
               </form>
             )}
           </section>
         )}
         {page === 'Keys' && (
           <section>
-            <h2>Issue key</h2>
+            <h2>签发密钥</h2>
             <form
               onSubmit={(e) => {
                 e.preventDefault();
@@ -310,23 +295,23 @@ function Console() {
                   });
                   setKey(result.token);
                   form.reset();
-                }, 'Key created');
+                }, '密钥已签发');
               }}
             >
               <label>
-                Key name
+                密钥名称
                 <input name="label" required maxLength={100} />
               </label>
               <fieldset>
-                <legend>Allowed account pools</legend>
+                <legend>授权账号池</legend>
                 {(rows.pools ?? []).map((pool) => (
                   <label className="check" key={pool.id}>
                     <input type="checkbox" name="pool" value={pool.id} />
-                    {pool.provider} / {pool.name}
+                    {labels[pool.provider] ?? pool.provider} / {pool.name === 'Default' ? '默认' : pool.name}
                   </label>
                 ))}
               </fieldset>
-              <button disabled={busy || !rows.pools?.length}>Issue key</button>
+              <button disabled={busy || !rows.pools?.length}>签发密钥</button>
             </form>
             {key && (
               <div className="reveal">
@@ -334,13 +319,13 @@ function Console() {
                 <button
                   className="quiet"
                   onClick={() =>
-                    void navigator.clipboard.writeText(key).catch(() => setNotice('Copy the key manually'))
+                    void navigator.clipboard.writeText(key).catch(() => setNotice('请手动复制密钥'))
                   }
                 >
-                  Copy
+                  复制
                 </button>
                 <button className="quiet" onClick={() => setKey('')}>
-                  Dismiss
+                  关闭
                 </button>
               </div>
             )}
@@ -348,15 +333,15 @@ function Console() {
         )}
         {page === 'Media' && (
           <section>
-            <h2>Video tasks</h2>
+            <h2>视频任务</h2>
             <div className="table">
               <table>
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>Model</th>
-                    <th>Status</th>
-                    <th>Progress</th>
+                    <th>模型</th>
+                    <th>状态</th>
+                    <th>进度</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -364,7 +349,7 @@ function Console() {
                     <tr key={v.id}>
                       <td>{v.id}</td>
                       <td>{v.model}</td>
-                      <td>{v.status}</td>
+                      <td>{cellText('status', v.status)}</td>
                       <td>{v.progress}%</td>
                     </tr>
                   ))}
@@ -381,7 +366,7 @@ function Console() {
                   {columns[page].map(([field, title]) => (
                     <th key={field}>{title}</th>
                   ))}
-                  {['Accounts', 'Keys', 'Media'].includes(page) && <th>Action</th>}
+                  {['Accounts', 'Keys', 'Media'].includes(page) && <th>操作</th>}
                 </tr>
               </thead>
               <tbody>
@@ -389,7 +374,7 @@ function Console() {
                   <tr key={row.id + '-' + i}>
                     {columns[page].map(([field]) => (
                       <td key={field}>
-                        {field === 'enabled' ? (row.enabled ? 'Enabled' : 'Disabled') : String(row[field] ?? '—')}
+                        {cellText(field, row[field])}
                       </td>
                     ))}
                     {page === 'Accounts' && (
@@ -401,7 +386,7 @@ function Console() {
                             void act(() => api('accounts/' + row.id, 'PATCH', { enabled: !row.enabled }))
                           }
                         >
-                          {row.enabled ? 'Disable' : 'Enable'}
+                          {row.enabled ? '停用' : '启用'}
                         </button>
                       </td>
                     )}
@@ -412,10 +397,10 @@ function Console() {
                             className="quiet"
                             disabled={busy}
                             onClick={() => {
-                              if (confirm('Revoke this key?')) void act(() => api('keys/' + row.id, 'DELETE'));
+                              if (confirm('确认撤销此密钥？')) void act(() => api('keys/' + row.id, 'DELETE'));
                             }}
                           >
-                            Revoke
+                            撤销
                           </button>
                         )}
                       </td>
@@ -426,13 +411,8 @@ function Console() {
                           className="quiet"
                           onClick={() =>
                             void act(async () => {
-                              const response = await fetch('/admin/v1/media/' + row.id, {
-                                headers: {
-                                  authorization: 'Bearer ' + session,
-                                  ...(space ? { 'x-workspace-id': space } : {}),
-                                },
-                              });
-                              if (!response.ok) throw new Error('Download failed');
+                              const response = await fetch('/admin/v1/media/' + row.id);
+                              if (!response.ok) throw new Error('下载失败');
                               const url = URL.createObjectURL(await response.blob());
                               const link = document.createElement('a');
                               link.href = url;
@@ -442,7 +422,7 @@ function Console() {
                             })
                           }
                         >
-                          Download
+                          下载
                         </button>
                       </td>
                     )}
@@ -450,7 +430,7 @@ function Console() {
                 ))}
               </tbody>
             </table>
-            {!tabRows.length && <p className="empty">No {page.toLowerCase()} yet.</p>}
+            {!tabRows.length && <p className="empty">暂无{navigation[page]}</p>}
           </div>
         </section>
       </main>

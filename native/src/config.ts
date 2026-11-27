@@ -2,7 +2,8 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   const {
     DATABASE_URL: databaseUrl = '',
     GATEWAY_SECRET: gatewaySecret = '',
-    ADMIN_TOKEN: adminToken = '',
+    ADMIN_USERNAME: adminUsername = '',
+    ADMIN_PASSWORD: adminPassword = '',
     HOST: host = '127.0.0.1',
     PORT: portText = '41873',
     MEDIA_DIRECTORY: mediaDirectory = './data/native-media',
@@ -12,7 +13,8 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   const invalid = [
     !databaseUrl.trim() && 'DATABASE_URL',
     gatewaySecret.length < 32 && 'GATEWAY_SECRET (at least 32 characters)',
-    adminToken.length < 24 && 'ADMIN_TOKEN (at least 24 characters)',
+    (!adminUsername.trim() || adminUsername.length > 128) && 'ADMIN_USERNAME',
+    (adminPassword.length < 12 || adminPassword.length > 1024) && 'ADMIN_PASSWORD (12–1024 characters)',
     !host.trim() && 'HOST',
     (!/^\d+$/.test(portText) || port < 1 || port > 65535) && 'PORT (1–65535)',
   ].filter(Boolean);
@@ -29,5 +31,5 @@ export function readConfig(env: NodeJS.ProcessEnv) {
   const browserHost = host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host;
   const urlHost = browserHost.includes(':') ? `[${browserHost}]` : browserHost;
   const frontendUrl = publicBaseUrl || `http://${urlHost}:${port}/`;
-  return { databaseUrl, gatewaySecret, adminToken, host, port, mediaDirectory, publicBaseUrl, frontendUrl };
+  return { databaseUrl, gatewaySecret, adminUsername, adminPassword, host, port, mediaDirectory, publicBaseUrl, frontendUrl };
 }

@@ -23,9 +23,8 @@ const config = (() => {
   }
 })();
 const store = openStore(config.databaseUrl, config.gatewaySecret);
-const adminToken = Buffer.from(config.adminToken);
 const files = openFiles(resolve(config.mediaDirectory));
-const workspace = await store.initialize();
+await store.initialize();
 await files.initialize();
 const videos = createVideoService(store, files);
 const generate = generation(store, files);
@@ -90,7 +89,7 @@ router.get('/console.js', async (ctx) => {
   ctx.body = await readFile(new URL('../console.js', import.meta.url), 'utf8');
 });
 
-registerAdmin(router, store, files, workspace, adminToken, requestSignal);
+registerAdmin(router, store, files, config, requestSignal);
 registerAPI(router, store, files, videos, generate, requestSignal, config.publicBaseUrl);
 app.use(router.routes());
 app.use(router.allowedMethods());

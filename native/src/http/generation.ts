@@ -34,9 +34,9 @@ export function generation(store: Store, files: Files) {
     };
     try {
       await store.db.query(
-        `INSERT INTO request_attempts(id,workspace_id,owner_id,account_id,operation,model,status)
-        VALUES($1,$2,$3,$4,$5,$6,'running')`,
-        [id, key.workspace_id, key.id, account.id, operation, model],
+        `INSERT INTO request_attempts(id,owner_id,account_id,operation,model,status)
+        VALUES($1,$2,$3,$4,$5,'running')`,
+        [id, key.id, account.id, operation, model],
       );
       const result = await run(account, (stream, response, readResult) => {
         deferred = true;
@@ -187,8 +187,8 @@ export function generation(store: Store, files: Files) {
         const id = randomUUID();
         await files.write(id, bytes);
         await store.db.query(
-          'INSERT INTO media_assets(id,workspace_id,owner_id,mime,bytes) VALUES($1,$2,$3,$4,$5)',
-          [id, key.workspace_id, key.id, mime, bytes.length],
+          'INSERT INTO media_assets(id,owner_id,mime,bytes) VALUES($1,$2,$3,$4)',
+          [id, key.id, mime, bytes.length],
         );
         data.push(
           format === 'b64_json' ? { b64_json: bytes.toString('base64') } : { url: store.signedMedia(id, origin) },

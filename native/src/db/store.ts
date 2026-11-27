@@ -13,6 +13,8 @@ import { discover, normalizeCredential, refreshCredential } from '../providers/i
 
 import { AppError } from '../domain.ts';
 
+export const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
+
 export function openStore(connection: string, secret: string) {
   const db = new pg.Pool({ connectionString: connection, max: 20 });
   const encryptionKey = createHash('sha256').update('ai-gateway credential encryption\0').update(secret).digest();
@@ -82,48 +84,55 @@ export function openStore(connection: string, secret: string) {
       if (exists) {
         const version = (await client.query('SELECT version FROM gateway_schema WHERE singleton')).rows[0]
           ?.version;
-        if (version !== 1) throw new Error('The database schema version is unsupported');
+        if (version !== 2) throw new Error('The database schema version is unsupported. Set DATABASE_URL to an empty database.');
       } else {
         await client.query(schema);
       }
-      await client.query('INSERT INTO workspaces(name) VALUES($1) ON CONFLICT DO NOTHING', ['Default']);
-      return (await client.query('SELECT id FROM workspaces WHERE name=$1', ['Default'])).rows[0].id as string;
     });
   }
 
-  async function createAdminSession() {
-    const session = 'adm_' + randomBytes(32).toString('base64url');
-    await db.query('DELETE FROM admin_sessions WHERE expires_at<=now()');
-    await db.query("INSERT INTO admin_sessions(digest,expires_at) VALUES($1,now()+interval '8 hours')", [
-      digest(session),
-    ]);
-    return session;
+  function sessionDigest(scope: string, session: string) {
+    return digest(`admin-session:${scope}:${session}`);
   }
 
-  async function adminSession(raw: string) {
-    if (!raw.startsWith('adm_')) return false;
+  function createAdminSession(scope: string, previous: string | undefined) {
+    const session = randomBytes(32).toString('base64url');
+    return tx(async (client) => {
+      await client.query('DELETE FROM admin_sessions WHERE expires_at<=now() OR digest=$1', [
+        previous ? sessionDigest(scope, previous) : null,
+      ]);
+      await client.query(
+        "INSERT INTO admin_sessions(digest,expires_at) VALUES($1,now()+$2*interval '1 second')",
+        [sessionDigest(scope, session), ADMIN_SESSION_SECONDS],
+      );
+      return session;
+    });
+  }
+
+  async function hasAdminSession(scope: string, session: string | undefined) {
+    if (!session || !/^[A-Za-z0-9_-]{43}$/.test(session)) return false;
     return Boolean(
-      (await db.query('SELECT 1 FROM admin_sessions WHERE digest=$1 AND expires_at>now()', [digest(raw)]))
-        .rowCount,
+      (await db.query('SELECT 1 FROM admin_sessions WHERE digest=$1 AND expires_at>now()', [
+        sessionDigest(scope, session),
+      ])).rowCount,
     );
   }
 
-  function endAdminSession(raw: string) {
-    return db.query('DELETE FROM admin_sessions WHERE digest=$1', [digest(raw)]);
+  function endAdminSession(scope: string, session: string) {
+    return db.query('DELETE FROM admin_sessions WHERE digest=$1', [sessionDigest(scope, session)]);
   }
 
   async function getKey(raw: string) {
     if (!raw.startsWith('ag_')) return;
     return (
       await db.query(
-        'SELECT id,workspace_id,scopes FROM api_keys WHERE digest=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())',
+        'SELECT id,scopes FROM api_keys WHERE digest=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())',
         [digest(raw)],
       )
     ).rows[0];
   }
 
   async function createKey(
-    workspace: string,
     label: string,
     pools: string[],
     scopes: string[],
@@ -133,19 +142,18 @@ export function openStore(connection: string, secret: string) {
     return tx(async (client) => {
       const key = (
         await client.query(
-          'INSERT INTO api_keys(workspace_id,label,prefix,digest,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6) RETURNING id,label,prefix,scopes,expires_at',
-          [workspace, label, token.slice(0, 12), digest(token), scopes, expiresAt],
+          'INSERT INTO api_keys(label,prefix,digest,scopes,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id,label,prefix,scopes,expires_at',
+          [label, token.slice(0, 12), digest(token), scopes, expiresAt],
         )
       ).rows[0];
       for (const pool of new Set(pools)) {
-        await client.query('INSERT INTO api_key_pool_grants VALUES($1,$2,$3)', [workspace, key.id, pool]);
+        await client.query('INSERT INTO api_key_pool_grants(key_id,pool_id) VALUES($1,$2)', [key.id, pool]);
       }
       return { ...key, token };
     });
   }
 
   async function addAccount(
-    workspace: string,
     provider: string,
     kind: string,
     label: string,
@@ -174,15 +182,14 @@ export function openStore(connection: string, secret: string) {
       const {
         rows: [target],
       } = await client.query(
-        'INSERT INTO account_pools(workspace_id,name,provider) VALUES($1,$2,$3) ON CONFLICT(workspace_id,provider,name) DO UPDATE SET name=excluded.name RETURNING id',
-        [workspace, pool, provider],
+        'INSERT INTO account_pools(name,provider) VALUES($1,$2) ON CONFLICT(provider,name) DO UPDATE SET name=excluded.name RETURNING id',
+        [pool, provider],
       );
       await client.query(
-        `INSERT INTO provider_accounts(id,workspace_id,pool_id,provider,kind,label,secret,concurrency,expires_at)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        `INSERT INTO provider_accounts(id,pool_id,provider,kind,label,secret,concurrency,expires_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
         [
           id,
-          workspace,
           target.id,
           provider,
           kind,
@@ -205,17 +212,17 @@ export function openStore(connection: string, secret: string) {
     return { id, model_count: models.length };
   }
 
-  const allowed = `a.workspace_id=$1 AND a.enabled AND EXISTS
+  const allowed = `a.enabled AND EXISTS
     (SELECT 1 FROM api_key_pool_grants g JOIN api_keys k ON k.id=g.key_id
-      WHERE g.key_id=$2 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND g.pool_id=a.pool_id)`;
+      WHERE g.key_id=$1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at>now()) AND g.pool_id=a.pool_id)`;
 
   async function models(key) {
     return (
       await db.query(
         `SELECT DISTINCT ON(m.public_id,m.operation) m.public_id AS id,m.operation,m.capabilities
       FROM account_models m JOIN provider_accounts a ON a.id=m.account_id WHERE ${allowed}
-      AND m.operation=ANY($3) ORDER BY m.public_id,m.operation,a.id`,
-        [key.workspace_id, key.id, key.scopes],
+      AND m.operation=ANY($2) ORDER BY m.public_id,m.operation,a.id`,
+        [key.id, key.scopes],
       )
     ).rows;
   }
@@ -234,17 +241,17 @@ export function openStore(connection: string, secret: string) {
       } = await client.query(
         `SELECT a.*,m.upstream_id,m.capabilities
         FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
-        WHERE ${allowed} AND m.public_id=$3 AND m.operation=$4 AND ($5::uuid IS NULL OR a.id=$5)
-        AND (NOT $6::boolean OR ((a.cooldown_until IS NULL OR a.cooldown_until<=now())
+        WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 AND ($4::uuid IS NULL OR a.id=$4)
+        AND (NOT $5::boolean OR ((a.cooldown_until IS NULL OR a.cooldown_until<=now())
         AND (SELECT count(*) FROM account_leases l WHERE l.account_id=a.id AND l.until_at>now())<a.concurrency))
         ORDER BY a.last_used_at NULLS FIRST,a.id LIMIT 1 ${reserve ? 'FOR UPDATE OF a SKIP LOCKED' : ''}`,
-        [key.workspace_id, key.id, model, operation, fixed, reserve],
+        [key.id, model, operation, fixed, reserve],
       );
       if (!account) {
         const visible = await client.query(
           `SELECT 1 FROM provider_accounts a JOIN account_models m ON a.id=m.account_id
-          WHERE ${allowed} AND m.public_id=$3 AND m.operation=$4 LIMIT 1`,
-          [key.workspace_id, key.id, model, operation],
+          WHERE ${allowed} AND m.public_id=$2 AND m.operation=$3 LIMIT 1`,
+          [key.id, model, operation],
         );
         throw new AppError(
           visible.rowCount ? 429 : 404,
@@ -332,7 +339,7 @@ export function openStore(connection: string, secret: string) {
     verifyMedia,
     initialize,
     createAdminSession,
-    adminSession,
+    hasAdminSession,
     endAdminSession,
     getKey,
     createKey,

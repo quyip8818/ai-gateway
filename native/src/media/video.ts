@@ -45,9 +45,8 @@ export function createVideoService(store: Store, files: Files) {
     const id = typeof raw === 'string' && raw.startsWith('video_') ? raw.slice(6) : '';
     if (!isUUID(id)) throw new AppError(404, 'video_not_found');
     const job = (
-      await store.db.query('SELECT * FROM video_jobs WHERE id=$1 AND workspace_id=$2 AND owner_id=$3', [
+      await store.db.query('SELECT * FROM video_jobs WHERE id=$1 AND owner_id=$2', [
         id,
-        key.workspace_id,
         key.id,
       ])
     ).rows[0];
@@ -85,8 +84,8 @@ export function createVideoService(store: Store, files: Files) {
       const previous = (
         await store.db.query(
           `SELECT * FROM video_jobs
-        WHERE workspace_id=$1 AND owner_id=$2 AND operation=$3 AND idempotency_key=$4`,
-          [key.workspace_id, key.id, operation, idempotency],
+        WHERE owner_id=$1 AND operation=$2 AND idempotency_key=$3`,
+          [key.id, operation, idempotency],
         )
       ).rows[0];
       if (previous && !previous.input_hash.equals(hash)) throw new AppError(409, 'idempotency_conflict');
@@ -138,12 +137,11 @@ export function createVideoService(store: Store, files: Files) {
       rows: [job],
     } = await store.db.query(
       `INSERT INTO video_jobs
-      (id,workspace_id,owner_id,account_id,public_model,upstream_model,operation,idempotency_key,input_hash,payload,status,size,seconds,source_id,upstream_source_id)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'queued',$11,$12,$13,$14)
-      ON CONFLICT(workspace_id,owner_id,operation,idempotency_key) DO NOTHING RETURNING *`,
+      (id,owner_id,account_id,public_model,upstream_model,operation,idempotency_key,input_hash,payload,status,size,seconds,source_id,upstream_source_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued',$10,$11,$12,$13)
+      ON CONFLICT(owner_id,operation,idempotency_key) DO NOTHING RETURNING *`,
       [
         id,
-        key.workspace_id,
         key.id,
         target.id,
         publicModel,
@@ -279,9 +277,9 @@ export function createVideoService(store: Store, files: Files) {
           );
           if (!completed.rowCount) return;
           await client.query(
-            `INSERT INTO media_assets(id,workspace_id,owner_id,video_id,mime,bytes)
-            VALUES($1,$2,$3,$1,'video/mp4',$4)`,
-            [job.id, job.workspace_id, job.owner_id, bytes.length],
+            `INSERT INTO media_assets(id,owner_id,video_id,mime,bytes)
+            VALUES($1,$2,$1,'video/mp4',$3)`,
+            [job.id, job.owner_id, bytes.length],
           );
         });
         return;

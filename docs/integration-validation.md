@@ -15,7 +15,7 @@ TEST_DATABASE_URL=postgres://gatewaytest:test-password@127.0.0.1:5432/gatewaytes
 | Codex | 将工具请求与原始 `openai-oauth/core` 生成的出站基线比较。另断言授权域名、PKCE、回调状态单次消费、上游模型和 SSE 流。验证 OAuth 续期、OpenAI API Key 直连，以及非流式客户端从上游 SSE 聚合工具结果。 |
 | Kiro | 将工具请求与原始 `kiro-api` 请求构造器生成的基线比较。另断言模型 ID、Desktop/OIDC 续期、数据面鉴权、分片工具参数、消息终止事件、异常和截断。单测覆盖坏 CRC。并发请求共享一次凭证刷新。 |
 | Claude | 按 Messages 路径、账号凭证和计数接口验证。客户端断开后检查上游取消、尝试状态及账号租约可重新获取。 |
-| 网关 | 空库、管理会话、权限池筛选、跨空间授权拒绝、视频归属、签名到期、并发幂等、重启后持久状态及拒绝未知数据库版本。 |
+| 网关 | 空库、用户名密码登录、会话及改密失效、账号池筛选、无效账号池授权拒绝、视频归属、签名到期、并发幂等、重启后持久状态及拒绝未知数据库版本。 |
 
 即梦固定基线在 [fixtures/jimeng-submissions.json](../native/test/fixtures/jimeng-submissions.json)。生成时使用本地 `jimeng-api` 的 `bf54a38451d18b80c66f1982590ef2f0a75b4c0a` 加 [源码来源](../native/SOURCES.md) 记录的工作树更新。捕获脚本加载原项目的生成控制器和依赖，需要在源项目中先安装其锁定依赖。测试替换持久化、浏览器与网络边界。归一化仅覆盖随机 ID、时间、随机种子和 Web ID。CI 读取已提交的基线，需要审阅上游源码改变时才重新生成：
 
